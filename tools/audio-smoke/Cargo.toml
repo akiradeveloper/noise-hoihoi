@@ -1,0 +1,21 @@
+[package]
+name = "audio-smoke"
+description = "End-to-end virtual audio device smoke test"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+cpal.workspace = true
+noise-hoihoi-engine = { path = "../../NoiseHoiHoi/crates/noise-hoihoi-engine" }
+
+[lints]
+workspace = true

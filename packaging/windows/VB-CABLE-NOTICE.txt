@@ -1,0 +1,21 @@
+VB-CABLE THIRD-PARTY COMPONENT NOTICE
+
+NoiseHoiHoi includes the unmodified base VB-CABLE package from VB-Audio
+Software. VB-CABLE provides the virtual audio device used by NoiseHoiHoi.
+
+Origin: https://www.vb-cable.com/
+
+VB-CABLE is donationware. All participations are welcome. If you find
+VB-CABLE useful, you can donate or obtain a license from VB-Audio Software:
+https://vb-audio.com/Services/licensing.htm
+
+VB-CABLE remains a separately identifiable VB-Audio product. Its own license
+and readme are included under third-party\vb-cable in the installed files.
+
+NoiseHoiHoi writes processed audio to "CABLE Input (VB-Audio Virtual Cable)".
+Select "CABLE Output (VB-Audio Virtual Cable)" as the microphone in OBS,
+Discord, games, or other recording applications.
+
+Uninstalling NoiseHoiHoi does not remove VB-CABLE because other applications
+may also be using it. Use the official VB-CABLE setup program if you later
+want to remove the driver.

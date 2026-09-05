@@ -1,0 +1,21 @@
+[package]
+name = "noise-hoihoi-engine"
+description = "Real-time audio engine for NoiseHoiHoi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+cpal.workspace = true
+rtrb.workspace = true
+rubato.workspace = true
+
+[lints]
+workspace = true

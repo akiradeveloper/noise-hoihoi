@@ -1,0 +1,18 @@
+[package]
+name = "noise-hoihoi-app"
+description = "NoiseHoiHoi desktop application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[target.'cfg(windows)'.dependencies]
+eframe.workspace = true
+noise-hoihoi-engine = { path = "../noise-hoihoi-engine" }
+serde.workspace = true
+
+[lints]
+workspace = true
