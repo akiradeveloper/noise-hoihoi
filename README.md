@@ -1,11 +1,16 @@
 # NoiseHoiHoi
 
-NoiseHoiHoi is a desktop audio application for streamers. Version 0.1 targets
+NoiseHoiHoi is a desktop audio application for streamers. Version 0.2 targets
 Windows 11 x64 and forwards a selected physical microphone through VB-CABLE
 without noise reduction. NoiseHoiHoi writes to `CABLE Input (VB-Audio Virtual
 Cable)`, and recording applications read from `CABLE Output (VB-Audio Virtual
 Cable)`. The route exists only while the GUI is running; there is no tray
 process or user-mode service.
+
+Use the `Signal monitor...` button at the bottom of the main window to open a
+separate live view of the processor input, output, and their difference.
+Because v0.2 still uses bit-exact pass-through, the difference is expected to
+remain silent.
 
 ## Components
 
@@ -33,11 +38,11 @@ Build the optimized Windows application and installer locally with Docker:
 just build-windows
 ```
 
-The result is `out/NoiseHoiHoi-v0.1-setup.exe`. The build downloads the official
+The result is `out/NoiseHoiHoi-v0.2-setup.exe`. The build downloads the official
 VB-CABLE package, verifies its pinned SHA-256, expected driver identity, and
 catalog signer certificate, then embeds the unmodified package. The setup
 silently installs VB-CABLE when it is absent. A Windows restart is required
-after first install. It also emits `out/NoiseHoiHoi-v0.1-audio-smoke.exe` for
+after first install. It also emits `out/NoiseHoiHoi-v0.2-audio-smoke.exe` for
 validating the VB-CABLE bridge on Windows without installing a Rust toolchain.
 No Git push or hosted CI artifact is involved.
 
@@ -50,6 +55,3 @@ VB-CABLE is donationware by VB-Audio Software. Its attribution and distribution
 terms are shown by the installer and included in the installed licenses.
 
 NoiseHoiHoi targets Windows and Linux. macOS is not a supported target.
-
-The v0.1 architecture and manual release checks are documented in
-`doc/v0.1-architecture.md` and `doc/v0.1-release-checklist.md`.

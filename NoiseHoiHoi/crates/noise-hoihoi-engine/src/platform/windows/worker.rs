@@ -14,7 +14,9 @@ use rubato::{
     WindowFunction, audioadapter_buffers::direct::SequentialSliceOfVecs,
 };
 
-use crate::{AudioProcessor, EngineError, PIPELINE_SAMPLE_RATE, metrics::SharedMetrics};
+use crate::{
+    AudioProcessor, EngineError, PIPELINE_SAMPLE_RATE, SignalMonitorSample, metrics::SharedMetrics,
+};
 
 const PROCESSING_CHUNK_MS: usize = 10;
 const MAX_DRIFT_CORRECTION: f64 = 0.002;
@@ -26,11 +28,23 @@ pub(super) struct WorkerConfig {
     pub target_output_frames: usize,
 }
 
+pub(super) struct SignalMonitorWriter {
+    producer: Producer<SignalMonitorSample>,
+    enabled: Arc<AtomicBool>,
+}
+
+impl SignalMonitorWriter {
+    pub(super) fn new(producer: Producer<SignalMonitorSample>, enabled: Arc<AtomicBool>) -> Self {
+        Self { producer, enabled }
+    }
+}
+
 pub(super) fn spawn_worker<P: AudioProcessor>(
     input: Consumer<f32>,
     output: Producer<f32>,
     processor: P,
     config: WorkerConfig,
+    signal_monitor: SignalMonitorWriter,
     stop: Arc<AtomicBool>,
     metrics: Arc<SharedMetrics>,
 ) -> Result<JoinHandle<()>, EngineError> {
@@ -44,6 +58,7 @@ pub(super) fn spawn_worker<P: AudioProcessor>(
             .map_err(|error| EngineError::Start(format!("failed to create resampler: {error}")))?;
     let input_buffer = vec![vec![0.0_f32; resampler.input_frames_max()]];
     let output_buffer = vec![vec![0.0_f32; resampler.output_frames_max()]];
+    let monitor_input_buffer = vec![0.0_f32; resampler.output_frames_max()];
 
     thread::Builder::new()
         .name("noise-hoihoi-audio".to_owned())
@@ -57,6 +72,8 @@ pub(super) fn spawn_worker<P: AudioProcessor>(
                 resampler,
                 input_buffer,
                 output_buffer,
+                monitor_input_buffer,
+                signal_monitor,
                 stop,
                 metrics,
             };
@@ -79,6 +96,8 @@ struct Worker<P> {
     resampler: Async<f32>,
     input_buffer: Vec<Vec<f32>>,
     output_buffer: Vec<Vec<f32>>,
+    monitor_input_buffer: Vec<f32>,
+    signal_monitor: SignalMonitorWriter,
     stop: Arc<AtomicBool>,
     metrics: Arc<SharedMetrics>,
 }
@@ -126,8 +145,31 @@ impl<P: AudioProcessor> Worker<P> {
                 .process_into_buffer(&input_adapter, &mut output_adapter, None)
                 .map_err(|error| format!("audio resampling failed: {error}"))?;
 
+            let monitor_enabled = self.signal_monitor.enabled.load(Ordering::Acquire);
+            if monitor_enabled {
+                self.monitor_input_buffer[..produced_frames]
+                    .copy_from_slice(&self.output_buffer[0][..produced_frames]);
+            }
+
             self.processor
                 .process(&mut self.output_buffer[0][..produced_frames]);
+
+            if monitor_enabled {
+                let mut dropped_frames = 0_u64;
+                for (&input, &output) in self.monitor_input_buffer[..produced_frames]
+                    .iter()
+                    .zip(&self.output_buffer[0][..produced_frames])
+                {
+                    let sample = SignalMonitorSample::new(input, output);
+                    if self.signal_monitor.producer.push(sample).is_err() {
+                        dropped_frames += 1;
+                    }
+                }
+                if dropped_frames != 0 {
+                    self.metrics
+                        .add_dropped_signal_monitor_frames(dropped_frames);
+                }
+            }
 
             for &sample in &self.output_buffer[0][..produced_frames] {
                 self.output

@@ -1,17 +1,30 @@
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use eframe::egui::{self, Color32, RichText};
 use noise_hoihoi_engine::{
     AudioDevice, EngineConfig, EngineState, MetricsHandle, PassThrough, RunningAudioEngine,
-    VB_CABLE_RECORDING_ENDPOINT_NAME, input_devices, start,
+    SignalMonitorSample, VB_CABLE_RECORDING_ENDPOINT_NAME, input_devices, start,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::signal_monitor::{self, SignalMonitorHistory};
 
 const APP_NAME: &str = "NoiseHoiHoi";
 const SETTINGS_KEY: &str = "noise-hoihoi-settings";
 const WINDOW_WIDTH: f32 = 440.0;
 const INITIAL_WINDOW_HEIGHT: f32 = 160.0;
 const PANEL_MARGIN: f32 = 16.0;
+const SIGNAL_MONITOR_TITLE: &str = "NoiseHoiHoi - Signal Monitor";
+const SIGNAL_MONITOR_WIDTH: f32 = 760.0;
+const SIGNAL_MONITOR_HEIGHT: f32 = 620.0;
+const SIGNAL_MONITOR_VIEWPORT_ID: &str = "noise-hoihoi-signal-monitor";
+const UI_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
 
 pub fn run() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -41,6 +54,10 @@ struct NoiseHoiHoiApp {
     engine: Option<RunningAudioEngine>,
     error: Option<String>,
     window_size: Option<egui::Vec2>,
+    signal_monitor_open: Arc<AtomicBool>,
+    signal_monitor_enabled: bool,
+    signal_history: Arc<Mutex<SignalMonitorHistory>>,
+    pending_signal_samples: Vec<SignalMonitorSample>,
 }
 
 impl NoiseHoiHoiApp {
@@ -55,6 +72,10 @@ impl NoiseHoiHoiApp {
             engine: None,
             error: None,
             window_size: None,
+            signal_monitor_open: Arc::new(AtomicBool::new(false)),
+            signal_monitor_enabled: false,
+            signal_history: Arc::new(Mutex::new(SignalMonitorHistory::default())),
+            pending_signal_samples: Vec::new(),
         };
         app.refresh_devices();
         if app.settings.input_device_id.is_some() {
@@ -108,8 +129,12 @@ impl NoiseHoiHoiApp {
         };
         let config = EngineConfig::new(input_device_id);
         match start(&config, PassThrough) {
-            Ok(engine) => {
+            Ok(mut engine) => {
+                let monitor_open = self.signal_monitor_open.load(Ordering::Acquire);
+                engine.set_signal_monitor_enabled(monitor_open);
                 self.engine = Some(engine);
+                self.signal_monitor_enabled = monitor_open;
+                self.clear_signal_history();
                 self.error = None;
             }
             Err(error) => self.error = Some(error.to_string()),
@@ -120,6 +145,7 @@ impl NoiseHoiHoiApp {
         if let Some(engine) = self.engine.take() {
             engine.stop();
         }
+        self.clear_signal_history();
     }
 
     fn draw_controls(&mut self, ui: &mut egui::Ui) {
@@ -165,7 +191,10 @@ impl NoiseHoiHoiApp {
         ui.horizontal(|ui| {
             ui.label("Noise reduction");
             let mut reduction = false;
-            ui.add_enabled(false, egui::Checkbox::new(&mut reduction, "Off (v0.1)"));
+            ui.add_enabled(
+                false,
+                egui::Checkbox::new(&mut reduction, "Off (available in v0.3)"),
+            );
         });
     }
 
@@ -216,10 +245,117 @@ impl NoiseHoiHoiApp {
             ui.colored_label(Color32::LIGHT_RED, error);
         }
     }
+
+    fn draw_signal_monitor_button(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+        if ui.button("Signal monitor…").clicked() {
+            if self.signal_monitor_open.load(Ordering::Acquire) {
+                ui.ctx().send_viewport_cmd_to(
+                    signal_monitor_viewport_id(),
+                    egui::ViewportCommand::Focus,
+                );
+            } else {
+                self.set_signal_monitor_open(true);
+            }
+        }
+    }
+
+    fn set_signal_monitor_open(&mut self, open: bool) {
+        self.signal_monitor_open.store(open, Ordering::Release);
+        self.sync_signal_monitor_state();
+    }
+
+    fn sync_signal_monitor_state(&mut self) {
+        let requested = self.signal_monitor_open.load(Ordering::Acquire);
+        if requested == self.signal_monitor_enabled {
+            return;
+        }
+
+        if let Some(engine) = self.engine.as_mut() {
+            engine.set_signal_monitor_enabled(requested);
+        }
+        self.signal_monitor_enabled = requested;
+        self.clear_signal_history();
+    }
+
+    fn collect_signal_samples(&mut self) {
+        if !self.signal_monitor_enabled {
+            return;
+        }
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+
+        self.pending_signal_samples.clear();
+        engine.drain_signal_monitor_samples(&mut self.pending_signal_samples);
+        if self.pending_signal_samples.is_empty() {
+            return;
+        }
+        self.signal_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .append(&self.pending_signal_samples);
+    }
+
+    fn clear_signal_history(&mut self) {
+        self.pending_signal_samples.clear();
+        self.signal_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    fn show_signal_monitor(&self, context: &egui::Context) {
+        if !self.signal_monitor_open.load(Ordering::Acquire) {
+            return;
+        }
+
+        let open = Arc::clone(&self.signal_monitor_open);
+        let history = Arc::clone(&self.signal_history);
+        let metrics = self.engine.as_ref().map(RunningAudioEngine::metrics);
+        let monitor_is_running = metrics.is_some();
+        context.show_viewport_deferred(
+            signal_monitor_viewport_id(),
+            egui::ViewportBuilder::default()
+                .with_title(SIGNAL_MONITOR_TITLE)
+                .with_inner_size([SIGNAL_MONITOR_WIDTH, SIGNAL_MONITOR_HEIGHT])
+                .with_min_inner_size([560.0, 420.0])
+                .with_resizable(true),
+            move |ui, _class| {
+                let close_requested = ui.input(|input| input.viewport().close_requested());
+                if close_requested {
+                    open.store(false, Ordering::Release);
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                    return;
+                }
+
+                egui::CentralPanel::default().show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        signal_monitor::draw(ui, &history, metrics.as_ref());
+                    });
+                });
+                if monitor_is_running {
+                    ui.ctx().request_repaint_after(UI_REFRESH_INTERVAL);
+                }
+            },
+        );
+    }
 }
 
 impl eframe::App for NoiseHoiHoiApp {
+    fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_signal_monitor_state();
+        self.collect_signal_samples();
+        if self.engine.is_some() {
+            context.request_repaint_after(UI_REFRESH_INTERVAL);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let context = ui.ctx().clone();
         let panel = egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical(|ui| {
                 self.draw_controls(ui);
@@ -227,6 +363,7 @@ impl eframe::App for NoiseHoiHoiApp {
                 ui.separator();
                 ui.add_space(10.0);
                 self.draw_status(ui);
+                self.draw_signal_monitor_button(ui);
             })
         });
 
@@ -238,9 +375,7 @@ impl eframe::App for NoiseHoiHoiApp {
             self.window_size = Some(desired_size);
         }
 
-        if self.engine.is_some() {
-            ui.ctx().request_repaint_after(Duration::from_millis(50));
-        }
+        self.show_signal_monitor(&context);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -248,6 +383,11 @@ impl eframe::App for NoiseHoiHoiApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.signal_monitor_open.store(false, Ordering::Release);
         self.stop();
     }
+}
+
+fn signal_monitor_viewport_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of(SIGNAL_MONITOR_VIEWPORT_ID)
 }

@@ -175,7 +175,7 @@ checksum = "1254ebf6529f3763c491acfb5ab6e960809e3c75a38584cc664f8c5667fb7107"
 
 [[package]]
 name = "audio-smoke"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1360,7 +1360,7 @@ checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
 name = "noise-hoihoi-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "noise-hoihoi-engine",
@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "noise-hoihoi-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cpal",
  "rtrb",

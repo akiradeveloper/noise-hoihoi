@@ -41,6 +41,8 @@ pub struct EngineMetrics {
     pub stream_faults: u64,
     pub processed_frames: u64,
     pub buffered_output_frames: u32,
+    /// Signal-monitor frames dropped without affecting the audio route.
+    pub dropped_signal_monitor_frames: u64,
 }
 
 #[derive(Debug)]
@@ -54,6 +56,7 @@ pub(crate) struct SharedMetrics {
     stream_faults: AtomicU64,
     processed_frames: AtomicU64,
     buffered_output_frames: AtomicU32,
+    dropped_signal_monitor_frames: AtomicU64,
     fault_message: Mutex<Option<String>>,
 }
 
@@ -69,6 +72,7 @@ impl Default for SharedMetrics {
             stream_faults: AtomicU64::new(0),
             processed_frames: AtomicU64::new(0),
             buffered_output_frames: AtomicU32::new(0),
+            dropped_signal_monitor_frames: AtomicU64::new(0),
             fault_message: Mutex::new(None),
         }
     }
@@ -132,6 +136,12 @@ impl SharedMetrics {
             .store(u32::try_from(count).unwrap_or(u32::MAX), Ordering::Relaxed);
     }
 
+    #[cfg(any(windows, test))]
+    pub(crate) fn add_dropped_signal_monitor_frames(&self, count: u64) {
+        self.dropped_signal_monitor_frames
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
     fn snapshot(&self) -> EngineMetrics {
         EngineMetrics {
             state: EngineState::from_u8(self.state.load(Ordering::Acquire)),
@@ -143,6 +153,9 @@ impl SharedMetrics {
             stream_faults: self.stream_faults.load(Ordering::Relaxed),
             processed_frames: self.processed_frames.load(Ordering::Relaxed),
             buffered_output_frames: self.buffered_output_frames.load(Ordering::Relaxed),
+            dropped_signal_monitor_frames: self
+                .dropped_signal_monitor_frames
+                .load(Ordering::Relaxed),
         }
     }
 }
@@ -184,6 +197,7 @@ mod tests {
         shared.add_output_discontinuity();
         shared.add_processed_frames(480);
         shared.set_buffered_output_frames(1_920);
+        shared.add_dropped_signal_monitor_frames(4);
         shared.mark_stream_fault("output stream: device invalidated");
 
         let handle = MetricsHandle(shared);
@@ -196,6 +210,7 @@ mod tests {
         assert_eq!(snapshot.output_discontinuities, 1);
         assert_eq!(snapshot.processed_frames, 480);
         assert_eq!(snapshot.buffered_output_frames, 1_920);
+        assert_eq!(snapshot.dropped_signal_monitor_frames, 4);
         assert_eq!(
             handle.last_error().as_deref(),
             Some("output stream: device invalidated")

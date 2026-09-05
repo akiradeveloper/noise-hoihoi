@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 - 2026-09-05
+
+- Added a separate signal-monitor window showing the latest second of aligned
+  processor input, output, and their difference.
+- Added a main-window button for opening or focusing the signal monitor.
+- Added audio-health diagnostics without blocking the real-time audio route.
+
 ## 0.1.0 - 2026-09-05
 
 - Added a Windows 11 x64 egui application that forwards a selected microphone

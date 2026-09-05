@@ -16,22 +16,25 @@ use crate::{
     AudioProcessor, EngineConfig, EngineError, EngineState, MetricsHandle, PIPELINE_SAMPLE_RATE,
 };
 use streams::{build_input_stream, build_output_stream};
-use worker::{WorkerConfig, spawn_worker, stop_worker};
+use worker::{SignalMonitorWriter, WorkerConfig, spawn_worker, stop_worker};
 
 pub use devices::input_devices;
 
 const MIN_OUTPUT_RING_FRAMES: usize = 8_192;
+const SIGNAL_MONITOR_RING_FRAMES: usize = PIPELINE_SAMPLE_RATE as usize;
 
 /// Owns both WASAPI streams and their dedicated processing thread.
 ///
 /// Dropping this value immediately tears down the route. This is intentional:
-/// v0.1 has no service or tray-resident process.
+/// `NoiseHoiHoi` has no service or tray-resident process.
 pub struct RunningAudioEngine {
     input_stream: Option<Stream>,
     output_stream: Option<Stream>,
     worker: Option<std::thread::JoinHandle<()>>,
     stop: Arc<AtomicBool>,
     metrics: MetricsHandle,
+    signal_monitor_enabled: Arc<AtomicBool>,
+    signal_monitor_consumer: rtrb::Consumer<crate::SignalMonitorSample>,
 }
 
 impl std::fmt::Debug for RunningAudioEngine {
@@ -49,6 +52,24 @@ impl RunningAudioEngine {
         self.metrics.clone()
     }
 
+    /// Enable or disable collection for the optional signal-monitor window.
+    pub fn set_signal_monitor_enabled(&mut self, enabled: bool) {
+        self.signal_monitor_enabled.store(false, Ordering::Release);
+        while self.signal_monitor_consumer.pop().is_ok() {}
+        self.signal_monitor_enabled
+            .store(enabled, Ordering::Release);
+    }
+
+    /// Drain all currently available aligned input/output samples.
+    pub fn drain_signal_monitor_samples(
+        &mut self,
+        destination: &mut Vec<crate::SignalMonitorSample>,
+    ) {
+        while let Ok(sample) = self.signal_monitor_consumer.pop() {
+            destination.push(sample);
+        }
+    }
+
     pub fn stop(self) {
         drop(self);
     }
@@ -58,6 +79,7 @@ impl RunningAudioEngine {
         // unparked so closing an idle application never waits for a timeout.
         self.input_stream.take();
         self.output_stream.take();
+        self.signal_monitor_enabled.store(false, Ordering::Release);
         self.stop.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
             worker.thread().unpark();
@@ -105,6 +127,8 @@ pub fn start<P: AudioProcessor>(
     let input_ring_capacity = scale_frames_to_rate(output_ring_capacity, input_rate)?;
     let (input_producer, input_consumer) = RingBuffer::<f32>::new(input_ring_capacity);
     let (mut output_producer, output_consumer) = RingBuffer::<f32>::new(output_ring_capacity);
+    let (signal_monitor_producer, signal_monitor_consumer) =
+        RingBuffer::<crate::SignalMonitorSample>::new(SIGNAL_MONITOR_RING_FRAMES);
 
     // Pre-roll silence separates the independently clocked endpoints from the
     // first callback and gives the worker time to begin producing audio.
@@ -119,6 +143,7 @@ pub fn start<P: AudioProcessor>(
     shared_metrics.set_buffered_output_frames(target_output_frames);
     let metrics = MetricsHandle(Arc::clone(&shared_metrics));
     let stop = Arc::new(AtomicBool::new(false));
+    let signal_monitor_enabled = Arc::new(AtomicBool::new(false));
 
     let worker = spawn_worker(
         input_consumer,
@@ -129,6 +154,7 @@ pub fn start<P: AudioProcessor>(
             output_capacity: output_ring_capacity,
             target_output_frames,
         },
+        SignalMonitorWriter::new(signal_monitor_producer, Arc::clone(&signal_monitor_enabled)),
         Arc::clone(&stop),
         Arc::clone(&shared_metrics),
     )?;
@@ -188,5 +214,7 @@ pub fn start<P: AudioProcessor>(
         worker: Some(worker),
         stop,
         metrics,
+        signal_monitor_enabled,
+        signal_monitor_consumer,
     })
 }

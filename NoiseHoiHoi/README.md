@@ -6,9 +6,9 @@ The application is deliberately split into two crates:
   and runtime metrics.
 - `noise-hoihoi-app` owns only the egui user interface and persisted UI state.
 
-The v0.1 engine uses `PassThrough`. NoiseNet will implement the same
-`AudioProcessor` interface in v0.3. Version 0.2 adds the debug view using the
-metrics already collected by the engine.
+The engine uses `PassThrough` through v0.2. NoiseNet will implement the same
+`AudioProcessor` interface in v0.3. Version 0.2 adds a separate signal-monitor
+window backed by a bounded diagnostic ring owned by the engine.
 
 The engine owns both audio streams and its processing thread, so dropping it
 stops routing immediately. Audio callbacks only convert and transfer samples;

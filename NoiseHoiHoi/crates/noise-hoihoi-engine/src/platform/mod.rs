@@ -6,7 +6,9 @@ pub use windows::{RunningAudioEngine, input_devices, start};
 
 #[cfg(not(windows))]
 mod unsupported {
-    use crate::{AudioDevice, AudioProcessor, EngineConfig, EngineError, MetricsHandle};
+    use crate::{
+        AudioDevice, AudioProcessor, EngineConfig, EngineError, MetricsHandle, SignalMonitorSample,
+    };
 
     /// Placeholder type that keeps platform-independent workspace checks useful.
     #[derive(Debug)]
@@ -15,7 +17,15 @@ mod unsupported {
     impl RunningAudioEngine {
         #[must_use]
         pub fn metrics(&self) -> MetricsHandle {
-            unreachable!("a running v0.1 engine cannot exist off Windows")
+            unreachable!("a running engine cannot exist off Windows")
+        }
+
+        pub fn set_signal_monitor_enabled(&mut self, _enabled: bool) {}
+
+        pub fn drain_signal_monitor_samples(
+            &mut self,
+            _destination: &mut Vec<SignalMonitorSample>,
+        ) {
         }
 
         pub fn stop(self) {}

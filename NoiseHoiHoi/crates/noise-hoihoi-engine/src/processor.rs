@@ -6,7 +6,7 @@ pub trait AudioProcessor: Send + 'static {
     fn process(&mut self, mono_48khz: &mut [f32]);
 }
 
-/// The only processor exposed by v0.1.
+/// The only processor exposed through v0.2.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PassThrough;
 
