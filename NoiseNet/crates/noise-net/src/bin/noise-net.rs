@@ -1,27 +1,61 @@
-use std::{path::PathBuf, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use noise_net::{ALGORITHM_LATENCY_SAMPLES, FRAME_SIZE, NoiseNet, SAMPLE_RATE};
+use noise_net::{ALGORITHM_LATENCY_SAMPLES, FRAME_SIZE, NoiseNet, SAMPLE_RATE, processors};
 
 #[derive(Debug, Parser)]
 #[command(about = "Enhance a 48 kHz WAV with Burn DeepFilterNet3")]
 struct Args {
+    /// Print selectable CPU/GPU processors and exit.
+    #[arg(long)]
+    list_processors: bool,
+
+    /// Processor ID reported by --list-processors.
+    #[arg(long, default_value = "cpu")]
+    processor: String,
+
     /// Input WAV. Multiple channels are averaged to mono.
-    input: PathBuf,
+    #[arg(required_unless_present = "list_processors")]
+    input: Option<PathBuf>,
+
     /// Destination 32-bit float mono WAV.
-    output: PathBuf,
+    #[arg(required_unless_present = "list_processors")]
+    output: Option<PathBuf>,
 }
 
 #[allow(clippy::cast_precision_loss)]
 fn main() -> Result<()> {
     let args = Args::parse();
-    let samples = read_wav(&args.input)?;
-    let mut net = NoiseNet::new_cpu().context("could not initialize NoiseNet")?;
+    let processors = processors();
+    if args.list_processors {
+        for processor in processors {
+            println!(
+                "{}\t{}\t{}",
+                processor.id(),
+                processor.name(),
+                processor.default_runtime()
+            );
+        }
+        return Ok(());
+    }
+
+    let processor = processors
+        .iter()
+        .find(|processor| processor.id() == args.processor)
+        .with_context(|| format!("processor '{}' is not available", args.processor))?;
+    let input = args.input.expect("clap requires an input path");
+    let output = args.output.expect("clap requires an output path");
+    let samples = read_wav(&input)?;
+    let mut net = NoiseNet::new(processor, processor.default_runtime())
+        .with_context(|| format!("could not initialize NoiseNet on {}", processor.name()))?;
     let started = Instant::now();
     let enhanced = enhance(&mut net, &samples);
     let elapsed = started.elapsed();
-    write_wav(&args.output, &enhanced)?;
+    write_wav(&output, &enhanced)?;
 
     let audio_seconds = samples.len() as f64 / f64::from(SAMPLE_RATE);
     let real_time_factor = elapsed.as_secs_f64() / audio_seconds.max(f64::EPSILON);
@@ -53,7 +87,7 @@ fn enhance(net: &mut NoiseNet, samples: &[f32]) -> Vec<f32> {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn read_wav(path: &PathBuf) -> Result<Vec<f32>> {
+fn read_wav(path: &Path) -> Result<Vec<f32>> {
     let mut reader = hound::WavReader::open(path)
         .with_context(|| format!("could not open {}", path.display()))?;
     let spec = reader.spec();
@@ -99,7 +133,7 @@ fn read_wav(path: &PathBuf) -> Result<Vec<f32>> {
         .collect())
 }
 
-fn write_wav(path: &PathBuf, samples: &[f32]) -> Result<()> {
+fn write_wav(path: &Path, samples: &[f32]) -> Result<()> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: SAMPLE_RATE,

@@ -308,6 +308,17 @@ fn draw_metrics(ui: &mut egui::Ui, metrics: EngineMetrics) {
                 metrics.dropped_signal_monitor_frames.to_string(),
             );
             ui.end_row();
+            metric(
+                ui,
+                "Max processing",
+                format_processing_time(metrics.max_processing_time_us),
+            );
+            metric(
+                ui,
+                "Deadline misses",
+                metrics.processing_deadline_misses.to_string(),
+            );
+            ui.end_row();
         });
 }
 
@@ -319,6 +330,14 @@ fn metric(ui: &mut egui::Ui, label: &str, value: String) {
 fn format_buffer(frames: u32) -> String {
     let milliseconds = f64::from(frames) * 1_000.0 / f64::from(PIPELINE_SAMPLE_RATE);
     format!("{frames} frames ({milliseconds:.1} ms)")
+}
+
+fn format_processing_time(microseconds: u64) -> String {
+    format!(
+        "{}.{:02} ms",
+        microseconds / 1_000,
+        microseconds % 1_000 / 10
+    )
 }
 
 fn amplitude_text(amplitude: f32) -> String {

@@ -40,6 +40,10 @@ pub struct EngineMetrics {
     pub output_discontinuities: u64,
     pub stream_faults: u64,
     pub processed_frames: u64,
+    /// Longest individual processor call since this engine started.
+    pub max_processing_time_us: u64,
+    /// Processor calls that exceeded the duration of their audio block.
+    pub processing_deadline_misses: u64,
     pub buffered_output_frames: u32,
     /// Signal-monitor frames dropped without affecting the audio route.
     pub dropped_signal_monitor_frames: u64,
@@ -55,6 +59,8 @@ pub(crate) struct SharedMetrics {
     output_discontinuities: AtomicU64,
     stream_faults: AtomicU64,
     processed_frames: AtomicU64,
+    max_processing_time_us: AtomicU64,
+    processing_deadline_misses: AtomicU64,
     buffered_output_frames: AtomicU32,
     dropped_signal_monitor_frames: AtomicU64,
     fault_message: Mutex<Option<String>>,
@@ -71,6 +77,8 @@ impl Default for SharedMetrics {
             output_discontinuities: AtomicU64::new(0),
             stream_faults: AtomicU64::new(0),
             processed_frames: AtomicU64::new(0),
+            max_processing_time_us: AtomicU64::new(0),
+            processing_deadline_misses: AtomicU64::new(0),
             buffered_output_frames: AtomicU32::new(0),
             dropped_signal_monitor_frames: AtomicU64::new(0),
             fault_message: Mutex::new(None),
@@ -131,6 +139,15 @@ impl SharedMetrics {
     }
 
     #[cfg(any(windows, test))]
+    pub(crate) fn observe_processing(&self, elapsed: std::time::Duration, deadline_misses: u64) {
+        let microseconds = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.max_processing_time_us
+            .fetch_max(microseconds, Ordering::Relaxed);
+        self.processing_deadline_misses
+            .fetch_add(deadline_misses, Ordering::Relaxed);
+    }
+
+    #[cfg(any(windows, test))]
     pub(crate) fn set_buffered_output_frames(&self, count: usize) {
         self.buffered_output_frames
             .store(u32::try_from(count).unwrap_or(u32::MAX), Ordering::Relaxed);
@@ -152,6 +169,8 @@ impl SharedMetrics {
             output_discontinuities: self.output_discontinuities.load(Ordering::Relaxed),
             stream_faults: self.stream_faults.load(Ordering::Relaxed),
             processed_frames: self.processed_frames.load(Ordering::Relaxed),
+            max_processing_time_us: self.max_processing_time_us.load(Ordering::Relaxed),
+            processing_deadline_misses: self.processing_deadline_misses.load(Ordering::Relaxed),
             buffered_output_frames: self.buffered_output_frames.load(Ordering::Relaxed),
             dropped_signal_monitor_frames: self
                 .dropped_signal_monitor_frames
@@ -196,6 +215,8 @@ mod tests {
         shared.add_input_discontinuity();
         shared.add_output_discontinuity();
         shared.add_processed_frames(480);
+        shared.observe_processing(std::time::Duration::from_micros(750), 2);
+        shared.observe_processing(std::time::Duration::from_micros(500), 0);
         shared.set_buffered_output_frames(1_920);
         shared.add_dropped_signal_monitor_frames(4);
         shared.mark_stream_fault("output stream: device invalidated");
@@ -209,6 +230,8 @@ mod tests {
         assert_eq!(snapshot.input_discontinuities, 1);
         assert_eq!(snapshot.output_discontinuities, 1);
         assert_eq!(snapshot.processed_frames, 480);
+        assert_eq!(snapshot.max_processing_time_us, 750);
+        assert_eq!(snapshot.processing_deadline_misses, 2);
         assert_eq!(snapshot.buffered_output_frames, 1_920);
         assert_eq!(snapshot.dropped_signal_monitor_frames, 4);
         assert_eq!(

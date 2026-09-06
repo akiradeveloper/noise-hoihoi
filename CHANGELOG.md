@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0 - 2026-09-06
+
+- Added a standalone NoiseNet runtime crate that discovers the host CPU with
+  `sysinfo`, discovers selectable GPUs through WGPU, and creates matching Burn
+  Flex or WGPU devices.
+- Added Windows WGPU inference over DX12 for discrete, integrated, and virtual
+  GPUs, including model warm-up before audio routing begins.
+- Added persisted processor selection. CPU uses Flex without a runtime control;
+  GPU selection reveals the WGPU runtime control.
+- Moved model and audio initialization off the GUI thread and added a visible
+  starting state.
+- Added maximum processor-call time and real-time deadline misses to the signal
+  monitor, plus an opt-in WGPU reference suite and processor-aware NoiseNet CLI.
+- Limited noise attenuation to a fixed 12 dB by mixing back the delay-aligned
+  microphone spectrum, protecting speech that the model misclassifies.
+- Added a fixed sustained-voice guard that bypasses model processing after
+  detecting strong 70-400 Hz periodicity, without adding a tuning control.
+- Reused NoiseNet spectrum buffers instead of allocating replacements on every
+  10 ms frame.
+
 ## 0.3.0 - 2026-09-06
 
 - Added streaming DeepFilterNet3 inference in the standalone NoiseNet crate

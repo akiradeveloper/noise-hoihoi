@@ -1,5 +1,8 @@
 #[cfg(any(target_os = "windows", test))]
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 /// In-place processing stage between microphone capture and virtual output.
 ///
@@ -26,19 +29,22 @@ impl AudioProcessor for PassThrough {
     fn process(&mut self, _mono_48khz: &mut [f32]) {}
 }
 
-/// `DeepFilterNet3` running on Burn Flex's CPU device.
+/// `DeepFilterNet3` running on the selected compute processor.
 pub struct NoiseReduction {
     inner: noise_net::NoiseNet,
 }
 
 impl NoiseReduction {
-    /// Load the embedded `DeepFilterNet3` model.
+    /// Load `DeepFilterNet3` on the selected compute processor and runtime.
     ///
     /// # Errors
     ///
-    /// Returns an error if the CPU runtime or model cannot initialize.
-    pub fn new_cpu() -> Result<Self, crate::EngineError> {
-        noise_net::NoiseNet::new_cpu()
+    /// Returns an error if the requested pair or model cannot initialize.
+    pub fn new(
+        processor: &crate::ComputeProcessor,
+        runtime: crate::ComputeRuntime,
+    ) -> Result<Self, crate::EngineError> {
+        noise_net::NoiseNet::new(processor, runtime)
             .map(|inner| Self { inner })
             .map_err(|error| crate::EngineError::NoiseReduction(error.to_string()))
     }
@@ -76,6 +82,29 @@ pub(crate) struct ProcessorPipeline<P> {
 }
 
 #[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ProcessReport {
+    pub(crate) processed_samples: usize,
+    pub(crate) max_processing_time: Duration,
+    pub(crate) deadline_misses: u64,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl ProcessReport {
+    fn observe(&mut self, sample_count: usize, elapsed: Duration) {
+        self.processed_samples += sample_count;
+        self.max_processing_time = self.max_processing_time.max(elapsed);
+        let sample_count = u32::try_from(sample_count).unwrap_or(u32::MAX);
+        let deadline = Duration::from_secs_f64(
+            f64::from(sample_count) / f64::from(crate::PIPELINE_SAMPLE_RATE),
+        );
+        if elapsed > deadline {
+            self.deadline_misses += 1;
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
 impl<P: AudioProcessor> ProcessorPipeline<P> {
     pub(crate) fn new(processor: P) -> Result<Self, &'static str> {
         let frame_size = processor.frame_size();
@@ -102,8 +131,8 @@ impl<P: AudioProcessor> ProcessorPipeline<P> {
         &mut self,
         input: &[f32],
         mut publish: impl FnMut(&[f32], &[f32]) -> Result<(), E>,
-    ) -> Result<usize, E> {
-        let mut processed = 0;
+    ) -> Result<ProcessReport, E> {
+        let mut report = ProcessReport::default();
         if let Some(frame_size) = self.frame_size {
             self.pending.extend(input);
             while self.pending.len() >= frame_size {
@@ -114,19 +143,21 @@ impl<P: AudioProcessor> ProcessorPipeline<P> {
                         .expect("the complete processor frame was checked");
                 }
                 align_input(&mut self.input_delay, &self.frame, &mut self.aligned_input);
+                let started = Instant::now();
                 self.processor.process(&mut self.frame);
+                report.observe(frame_size, started.elapsed());
                 publish(&self.aligned_input, &self.frame)?;
-                processed += frame_size;
             }
         } else {
             self.frame.clear();
             self.frame.extend_from_slice(input);
             align_input(&mut self.input_delay, &self.frame, &mut self.aligned_input);
+            let started = Instant::now();
             self.processor.process(&mut self.frame);
+            report.observe(input.len(), started.elapsed());
             publish(&self.aligned_input, &self.frame)?;
-            processed = input.len();
         }
-        Ok(processed)
+        Ok(report)
     }
 }
 
@@ -189,10 +220,19 @@ mod tests {
             Ok(())
         };
 
-        assert_eq!(pipeline.process(&[1.0, 2.0, 3.0], &mut collect), Ok(0));
         assert_eq!(
-            pipeline.process(&[4.0, 5.0, 6.0, 7.0, 8.0, 9.0], &mut collect),
-            Ok(8)
+            pipeline
+                .process(&[1.0, 2.0, 3.0], &mut collect)
+                .unwrap()
+                .processed_samples,
+            0
+        );
+        assert_eq!(
+            pipeline
+                .process(&[4.0, 5.0, 6.0, 7.0, 8.0, 9.0], &mut collect)
+                .unwrap()
+                .processed_samples,
+            8
         );
         assert_eq!(
             published,
@@ -207,14 +247,14 @@ mod tests {
     fn arbitrary_processor_publishes_each_chunk_without_delay() {
         let mut pipeline = ProcessorPipeline::new(PassThrough).unwrap();
         let mut published = Vec::new();
-        let processed = pipeline
+        let report = pipeline
             .process(&[0.25, -0.5], |input, output| {
                 published.push((input.to_vec(), output.to_vec()));
                 Ok::<_, ()>(())
             })
             .unwrap();
 
-        assert_eq!(processed, 2);
+        assert_eq!(report.processed_samples, 2);
         assert_eq!(published, vec![(vec![0.25, -0.5], vec![0.25, -0.5])]);
     }
 }

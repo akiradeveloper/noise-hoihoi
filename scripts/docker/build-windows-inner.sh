@@ -157,6 +157,7 @@ cp -- "$repository_root/packaging/licenses/DeepFilterNet-LICENSE-MIT.txt" "$stag
 cp -- "$repository_root/packaging/windows/VB-CABLE-NOTICE.txt" "$stage/licenses/"
 cp -- /usr/share/doc/nsis/copyright "$stage/licenses/NSIS-copyright"
 cp -- /usr/share/common-licenses/Apache-2.0 "$stage/licenses/Apache-2.0.txt"
+cp -- /usr/share/common-licenses/MPL-2.0 "$stage/licenses/MPL-2.0.txt"
 cp -- "$repository_root/packaging/licenses/BSL-1.0.txt" "$stage/licenses/"
 cp -- "$smoke_binary" "$smoke_output"
 
@@ -167,7 +168,7 @@ mkdir -p "$rust_license_root"
 while read -r package_name package_version _; do
     package_version="${package_version#v}"
     case "$package_name" in
-        noise-hoihoi-app | noise-hoihoi-engine | noise-net)
+        noise-hoihoi-app | noise-hoihoi-engine | noise-net | noise-net-runtime)
             continue
             ;;
     esac
@@ -223,6 +224,11 @@ while read -r package_name package_version _; do
     )
     if ((license_count == 0)); then
         case "$package_name:$declared_license" in
+            mutants:MIT)
+                cp -- \
+                    "$repository_root/packaging/licenses/mutants-LICENSE-MIT.txt" \
+                    "$package_license_root/LICENSE-MIT"
+                ;;
             pulp-wasm-simd-flag:MIT)
                 cp -- \
                     "$repository_root/packaging/licenses/pulp-LICENSE-MIT.txt" \
@@ -233,7 +239,7 @@ while read -r package_name package_version _; do
                     "$repository_root/packaging/licenses/realfft-LICENSE-MIT.txt" \
                     "$package_license_root/LICENSE-MIT"
                 ;;
-            *:*Apache-2.0* | *:BSL-1.0) ;;
+            *:*Apache-2.0* | *:BSL-1.0 | *:MPL-2.0) ;;
             *)
                 echo "Rust dependency $package_name $package_version has no bundled license file or supported common-license fallback." >&2
                 exit 1

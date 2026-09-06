@@ -24,3 +24,7 @@ test-noisenet:
 # Include long-running NoiseNet durability tests.
 test-noisenet-full:
     cargo nextest run -P noisenet-full -p noise-net --run-ignored all
+
+# Run the opt-in reference suite on every WGPU adapter in this machine.
+test-noisenet-wgpu:
+    cargo nextest run -p noise-net --run-ignored ignored-only -E 'binary(/model_wgpu$/)'

@@ -1,0 +1,26 @@
+[package]
+name = "noise-net-runtime"
+description = "Compute processor discovery and Burn runtime selection for NoiseNet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+burn.workspace = true
+burn-wgpu.workspace = true
+pollster.workspace = true
+sysinfo.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+wgpu = { workspace = true, features = ["dx12"] }
+
+[target.'cfg(not(windows))'.dependencies]
+wgpu = { workspace = true, features = ["vulkan"] }
+
+[lints]
+workspace = true

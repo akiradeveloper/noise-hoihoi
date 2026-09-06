@@ -2,15 +2,17 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, TryRecvError},
     },
+    thread::JoinHandle,
     time::Duration,
 };
 
 use eframe::egui::{self, Color32, RichText};
 use noise_hoihoi_engine::{
-    AudioDevice, EngineConfig, EngineState, MetricsHandle, NoiseReduction, PassThrough,
-    RunningAudioEngine, SignalMonitorSample, VB_CABLE_RECORDING_ENDPOINT_NAME, input_devices,
-    start,
+    AudioDevice, ComputeProcessor, EngineConfig, EngineError, EngineState, MetricsHandle,
+    NoiseReduction, PassThrough, RunningAudioEngine, SignalMonitorSample,
+    VB_CABLE_RECORDING_ENDPOINT_NAME, compute_processors, input_devices, start,
 };
 use serde::{Deserialize, Serialize};
 
@@ -49,18 +51,28 @@ struct Settings {
     input_device_id: Option<String>,
     #[serde(default)]
     noise_reduction: bool,
+    #[serde(default)]
+    processor_id: Option<String>,
 }
 
 struct NoiseHoiHoiApp {
     settings: Settings,
     devices: Vec<AudioDevice>,
+    processors: Vec<ComputeProcessor>,
     engine: Option<RunningAudioEngine>,
+    engine_start: Option<EngineStart>,
     error: Option<String>,
+    notice: Option<String>,
     window_size: Option<egui::Vec2>,
     signal_monitor_open: Arc<AtomicBool>,
     signal_monitor_enabled: bool,
     signal_history: Arc<Mutex<SignalMonitorHistory>>,
     pending_signal_samples: Vec<SignalMonitorSample>,
+}
+
+struct EngineStart {
+    receiver: Receiver<Result<RunningAudioEngine, EngineError>>,
+    worker: JoinHandle<()>,
 }
 
 impl NoiseHoiHoiApp {
@@ -72,8 +84,11 @@ impl NoiseHoiHoiApp {
         let mut app = Self {
             settings,
             devices: Vec::new(),
+            processors: Vec::new(),
             engine: None,
+            engine_start: None,
             error: None,
+            notice: None,
             window_size: None,
             signal_monitor_open: Arc::new(AtomicBool::new(false)),
             signal_monitor_enabled: false,
@@ -81,10 +96,36 @@ impl NoiseHoiHoiApp {
             pending_signal_samples: Vec::new(),
         };
         app.refresh_devices();
+        app.refresh_processors();
         if app.settings.input_device_id.is_some() {
             app.start();
         }
         app
+    }
+
+    fn refresh_processors(&mut self) {
+        self.processors = compute_processors();
+        let selection_is_valid = self
+            .settings
+            .processor_id
+            .as_ref()
+            .is_some_and(|id| self.processors.iter().any(|processor| processor.id() == id));
+        if selection_is_valid {
+            return;
+        }
+
+        let missing_selection = self.settings.processor_id.take();
+        self.settings.processor_id = self
+            .processors
+            .iter()
+            .find(|processor| !processor.is_gpu())
+            .or_else(|| self.processors.first())
+            .map(|processor| processor.id().to_owned());
+        if missing_selection.is_some() {
+            self.notice = Some(
+                "The selected processor is no longer available; using the CPU instead.".to_owned(),
+            );
+        }
     }
 
     fn refresh_devices(&mut self) {
@@ -125,17 +166,78 @@ impl NoiseHoiHoiApp {
             .map_or("Select a microphone", |device| device.name.as_str())
     }
 
+    fn selected_processor(&self) -> Option<&ComputeProcessor> {
+        self.settings.processor_id.as_ref().and_then(|id| {
+            self.processors
+                .iter()
+                .find(|processor| processor.id() == id)
+        })
+    }
+
+    fn selected_processor_name(&self) -> &str {
+        self.selected_processor()
+            .map_or("Select a processor", ComputeProcessor::name)
+    }
+
     fn start(&mut self) {
+        if self.engine_start.is_some() {
+            return;
+        }
         let Some(input_device_id) = self.settings.input_device_id.clone() else {
             self.error = Some("Select an input microphone first.".to_owned());
             return;
         };
         let config = EngineConfig::new(input_device_id);
-        let result = if self.settings.noise_reduction {
-            NoiseReduction::new_cpu().and_then(|processor| start(&config, processor))
+        let processor = if self.settings.noise_reduction {
+            let Some(processor) = self.selected_processor().cloned() else {
+                self.error = Some("Select a compute processor first.".to_owned());
+                return;
+            };
+            Some(processor)
         } else {
-            start(&config, PassThrough)
+            None
         };
+
+        let (sender, receiver) = mpsc::sync_channel(1);
+        match std::thread::Builder::new()
+            .name("noise-hoihoi-start".to_owned())
+            .spawn(move || {
+                let result = if let Some(processor) = processor {
+                    NoiseReduction::new(&processor, processor.default_runtime())
+                        .and_then(|processor| start(&config, processor))
+                } else {
+                    start(&config, PassThrough)
+                };
+                let _ = sender.send(result);
+            }) {
+            Ok(worker) => {
+                self.engine_start = Some(EngineStart { receiver, worker });
+                self.error = None;
+            }
+            Err(error) => {
+                self.error = Some(format!("Failed to start the audio initialization: {error}"));
+            }
+        }
+    }
+
+    fn poll_engine_start(&mut self) {
+        let result = match self.engine_start.as_ref() {
+            Some(starting) => match starting.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err(EngineError::Start(
+                    "audio initialization stopped unexpectedly".to_owned(),
+                ))),
+            },
+            None => None,
+        };
+        let Some(result) = result else {
+            return;
+        };
+
+        if let Some(starting) = self.engine_start.take() {
+            let _ = starting.worker.join();
+        }
         match result {
             Ok(mut engine) => {
                 let monitor_open = self.signal_monitor_open.load(Ordering::Acquire);
@@ -156,9 +258,23 @@ impl NoiseHoiHoiApp {
         self.clear_signal_history();
     }
 
+    fn finish_pending_start(&mut self) {
+        if let Some(starting) = self.engine_start.take() {
+            drop(starting.receiver);
+            let _ = starting.worker.join();
+        }
+    }
+
     fn draw_controls(&mut self, ui: &mut egui::Ui) {
+        ui.add_enabled_ui(self.engine_start.is_none(), |ui| {
+            self.draw_enabled_controls(ui);
+        });
+    }
+
+    fn draw_enabled_controls(&mut self, ui: &mut egui::Ui) {
         let selection_before = self.settings.input_device_id.clone();
         let reduction_before = self.settings.noise_reduction;
+        let processor_before = self.settings.processor_id.clone();
         let mut refresh_requested = false;
         ui.horizontal(|ui| {
             ui.label("Input");
@@ -190,16 +306,59 @@ impl NoiseHoiHoiApp {
             ui.label("Noise reduction");
             ui.checkbox(&mut self.settings.noise_reduction, "Enabled");
         });
+        if self.settings.noise_reduction {
+            ui.horizontal(|ui| {
+                ui.label("Processor");
+                egui::ComboBox::from_id_salt("compute-processor")
+                    .selected_text(self.selected_processor_name())
+                    .width(285.0)
+                    .show_ui(ui, |ui| {
+                        for processor in &self.processors {
+                            ui.selectable_value(
+                                &mut self.settings.processor_id,
+                                Some(processor.id().to_owned()),
+                                processor.name(),
+                            );
+                        }
+                    });
+            });
+            if let Some(processor) = self
+                .selected_processor()
+                .filter(|processor| processor.is_gpu())
+            {
+                ui.horizontal(|ui| {
+                    ui.label("Runtime");
+                    let mut runtime = processor.default_runtime();
+                    egui::ComboBox::from_id_salt("compute-runtime")
+                        .selected_text(runtime.to_string())
+                        .width(285.0)
+                        .show_ui(ui, |ui| {
+                            for &available_runtime in processor.runtimes() {
+                                ui.selectable_value(
+                                    &mut runtime,
+                                    available_runtime,
+                                    available_runtime.to_string(),
+                                );
+                            }
+                        });
+                });
+            }
+        }
 
         if refresh_requested {
             self.stop();
             self.refresh_devices();
+            self.refresh_processors();
             if self.settings.input_device_id.is_some() {
                 self.start();
             }
         } else if selection_before != self.settings.input_device_id
             || reduction_before != self.settings.noise_reduction
+            || processor_before != self.settings.processor_id
         {
+            if processor_before != self.settings.processor_id {
+                self.notice = None;
+            }
             self.stop();
             self.start();
         }
@@ -209,14 +368,18 @@ impl NoiseHoiHoiApp {
         let metrics_handle = self.engine.as_ref().map(RunningAudioEngine::metrics);
         let metrics = metrics_handle.as_ref().map(MetricsHandle::snapshot);
         let runtime_error = metrics_handle.as_ref().and_then(MetricsHandle::last_error);
-        let (status, status_color) = match metrics.map(|value| value.state) {
-            Some(EngineState::Starting) => ("Starting", Color32::YELLOW),
-            Some(EngineState::Running) => ("Running", Color32::LIGHT_GREEN),
-            Some(EngineState::Faulted) => ("Audio error", Color32::LIGHT_RED),
+        let (status, status_color) = match (
+            self.engine_start.is_some(),
+            metrics.map(|value| value.state),
+        ) {
+            (true, _) | (false, Some(EngineState::Starting)) => ("Starting", Color32::YELLOW),
+            (false, Some(EngineState::Running)) => ("Running", Color32::LIGHT_GREEN),
+            (false, Some(EngineState::Faulted)) => ("Audio error", Color32::LIGHT_RED),
             _ => ("Stopped", Color32::GRAY),
         };
-        let can_retry = self.engine.is_none()
-            || metrics.is_some_and(|value| value.state == EngineState::Faulted);
+        let can_retry = self.engine_start.is_none()
+            && (self.engine.is_none()
+                || metrics.is_some_and(|value| value.state == EngineState::Faulted));
         ui.horizontal(|ui| {
             ui.label("Status");
             ui.label(RichText::new(status).color(status_color).strong());
@@ -250,6 +413,9 @@ impl NoiseHoiHoiApp {
         if let Some(error) = self.error.as_ref().or(runtime_error.as_ref()) {
             ui.add_space(8.0);
             ui.colored_label(Color32::LIGHT_RED, error);
+        } else if let Some(notice) = &self.notice {
+            ui.add_space(8.0);
+            ui.colored_label(Color32::YELLOW, notice);
         }
     }
 
@@ -358,9 +524,10 @@ impl NoiseHoiHoiApp {
 
 impl eframe::App for NoiseHoiHoiApp {
     fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_engine_start();
         self.sync_signal_monitor_state();
         self.collect_signal_samples();
-        if self.engine.is_some() {
+        if self.engine.is_some() || self.engine_start.is_some() {
             context.request_repaint_after(UI_REFRESH_INTERVAL);
         }
     }
@@ -396,6 +563,7 @@ impl eframe::App for NoiseHoiHoiApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.signal_monitor_open.store(false, Ordering::Release);
         self.stop();
+        self.finish_pending_start();
     }
 }
 

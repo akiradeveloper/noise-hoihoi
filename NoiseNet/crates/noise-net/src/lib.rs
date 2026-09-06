@@ -3,12 +3,16 @@
 mod dsp;
 mod generated;
 mod network;
+mod voicing;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use dsp::DspState;
 use network::StreamingNetwork;
 use thiserror::Error;
+use voicing::VoicedGuard;
+
+pub use noise_net_runtime::{ComputeProcessor, ComputeRuntime, ProcessorKind, processors};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const FRAME_SIZE: usize = 480;
@@ -19,18 +23,25 @@ pub const DF_BINS: usize = 96;
 pub const DF_ORDER: usize = 5;
 pub const DF_LOOKAHEAD: usize = 2;
 pub const ALGORITHM_LATENCY_SAMPLES: usize = (FFT_SIZE - FRAME_SIZE) + DF_LOOKAHEAD * FRAME_SIZE;
+/// Maximum attenuation applied by the default product configuration.
+pub const ATTENUATION_LIMIT_DB: f32 = 12.0;
+pub(crate) const ATTENUATION_LIMIT_LINEAR: f32 = 0.251_188_64;
+/// Local SNR below which the upstream runtime considers a frame noise-only.
+pub(crate) const NOISE_ONLY_THRESHOLD_DB: f32 = -10.0;
 
 #[derive(Debug, Error)]
 pub enum NoiseNetError {
-    #[error("Burn Flex could not initialize or load DeepFilterNet3")]
-    Initialization,
+    #[error("Burn could not initialize or load DeepFilterNet3: {0}")]
+    Initialization(String),
 }
 
 /// A mono, 48 kHz, stateful `DeepFilterNet3` inference stream.
 pub struct NoiseNet {
     network: StreamingNetwork,
     dsp: DspState,
+    voiced_guard: VoicedGuard,
     last_local_snr_db: f32,
+    last_voice_protected: bool,
 }
 
 impl NoiseNet {
@@ -41,31 +52,110 @@ impl NoiseNet {
     /// Returns [`NoiseNetError::Initialization`] if the CPU runtime or embedded
     /// model cannot be initialized.
     pub fn new_cpu() -> Result<Self, NoiseNetError> {
-        catch_unwind(AssertUnwindSafe(|| Self {
-            network: StreamingNetwork::new_cpu(),
-            dsp: DspState::new(),
-            last_local_snr_db: -15.0,
-        }))
-        .map_err(|_| NoiseNetError::Initialization)
+        let processor = noise_net_runtime::cpu();
+        Self::new(&processor, ComputeRuntime::Flex)
     }
 
-    /// Process exactly one 10 ms frame.
+    /// Load the official `DeepFilterNet3` weights on the selected processor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoiseNetError::Initialization`] if the runtime, processor, or
+    /// embedded model cannot be initialized.
+    pub fn new(
+        processor: &ComputeProcessor,
+        runtime: ComputeRuntime,
+    ) -> Result<Self, NoiseNetError> {
+        match catch_unwind(AssertUnwindSafe(|| {
+            let device = noise_net_runtime::create_device(processor, runtime)
+                .map_err(|error| error.to_string())?;
+            let mut network = Self {
+                network: StreamingNetwork::new(device),
+                dsp: DspState::new(),
+                voiced_guard: VoicedGuard::new(),
+                last_local_snr_db: -15.0,
+                last_voice_protected: false,
+            };
+            if runtime == ComputeRuntime::Wgpu {
+                network.warm_up();
+                network.reset();
+            }
+            Ok::<_, String>(network)
+        })) {
+            Ok(Ok(network)) => Ok(network),
+            Ok(Err(error)) => Err(NoiseNetError::Initialization(error)),
+            Err(_) => Err(NoiseNetError::Initialization(format!(
+                "{} with {runtime}",
+                processor.name()
+            ))),
+        }
+    }
+
+    /// Process one 10 ms frame with the product's fixed voice protection.
     pub fn process_frame(&mut self, input: &[f32; FRAME_SIZE], output: &mut [f32; FRAME_SIZE]) {
+        let protect_voice = self.voiced_guard.update(input);
+        self.process_frame_inner(input, output, protect_voice);
+    }
+
+    /// Process one 10 ms frame without the product's voice protection.
+    ///
+    /// This entry point exists for exact model-reference diagnostics. Product
+    /// audio paths should use [`Self::process_frame`]. Reset the stream before
+    /// switching between protected and unprotected processing.
+    pub fn process_frame_unprotected(
+        &mut self,
+        input: &[f32; FRAME_SIZE],
+        output: &mut [f32; FRAME_SIZE],
+    ) {
+        self.process_frame_inner(input, output, false);
+    }
+
+    fn process_frame_inner(
+        &mut self,
+        input: &[f32; FRAME_SIZE],
+        output: &mut [f32; FRAME_SIZE],
+        protect_voice: bool,
+    ) {
         let features = self.dsp.analyze(input);
-        let inference = self.network.infer(features.erb, &features.complex);
+        let inference = self
+            .network
+            .infer(features.erb, &features.complex, protect_voice);
         self.dsp.synthesize(
             inference.mask.as_deref(),
             inference.coefficients.as_deref(),
             output,
         );
         self.last_local_snr_db = inference.local_snr_db;
+        self.last_voice_protected = inference.voice_protected;
     }
 
     /// Reset all recurrent, normalization, FFT, and history state.
     pub fn reset(&mut self) {
         self.network.reset();
         self.dsp = DspState::new();
+        self.voiced_guard = VoicedGuard::new();
         self.last_local_snr_db = -15.0;
+        self.last_voice_protected = false;
+    }
+
+    fn warm_up(&mut self) {
+        for frame_index in 0..24 {
+            let amplitude = match frame_index {
+                0..=3 => 0.0,
+                4..=11 => 0.08,
+                _ => 0.35,
+            };
+            let input = std::array::from_fn(|sample| {
+                let index = frame_index * FRAME_SIZE + sample;
+                let bits = u16::try_from(
+                    (index.wrapping_mul(1_103_515_245).wrapping_add(12_345) >> 16) & 0xffff,
+                )
+                .expect("the pseudo-random sample is limited to 16 bits");
+                amplitude * (f32::from(bits) / f32::from(u16::MAX) * 2.0 - 1.0)
+            });
+            let mut output = [0.0; FRAME_SIZE];
+            self.process_frame_unprotected(&input, &mut output);
+        }
     }
 
     #[must_use]
@@ -76,5 +166,11 @@ impl NoiseNet {
     #[must_use]
     pub const fn last_local_snr_db(&self) -> f32 {
         self.last_local_snr_db
+    }
+
+    /// Whether voice protection bypassed model processing for the most recent frame.
+    #[must_use]
+    pub const fn last_voice_protected(&self) -> bool {
+        self.last_voice_protected
     }
 }

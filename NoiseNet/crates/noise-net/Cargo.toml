@@ -16,6 +16,7 @@ burn-store.workspace = true
 clap.workspace = true
 df.workspace = true
 hound.workspace = true
+noise-net-runtime = { path = "../noise-net-runtime" }
 thiserror.workspace = true
 
 [lints]

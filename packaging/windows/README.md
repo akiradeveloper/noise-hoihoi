@@ -1,4 +1,4 @@
-# Windows v0.2 installer
+# Windows v0.4 installer
 
 Run the release build from a Linux host with Docker:
 
@@ -9,8 +9,8 @@ just build-windows
 It builds the Rust application with the optimized release profile and emits:
 
 ```text
-out/NoiseHoiHoi-v0.2-setup.exe
-out/NoiseHoiHoi-v0.2-audio-smoke.exe
+out/NoiseHoiHoi-v0.4-setup.exe
+out/NoiseHoiHoi-v0.4-audio-smoke.exe
 ```
 
 The build fetches the official base VB-CABLE Package 45 from VB-Audio, pins it
@@ -25,7 +25,7 @@ the finished NSIS archive and required payload entries are verified.
 License files for every Rust crate linked into the Windows application are
 collected from the locked target dependency graph. Crates that inherit a
 repository-level license retain their package metadata and attribution beside
-the selected common Apache-2.0 or Boost license text. The build fails if a
+the selected common Apache-2.0, MPL-2.0, or Boost license text. The build fails if a
 crate source has neither bundled license files nor a supported common-license
 fallback.
 

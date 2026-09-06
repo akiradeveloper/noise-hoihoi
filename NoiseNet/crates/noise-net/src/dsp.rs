@@ -5,10 +5,18 @@ use df::{
     compute_band_corr,
 };
 
-use crate::{DF_BINS, DF_LOOKAHEAD, DF_ORDER, ERB_BANDS, FFT_BINS, FRAME_SIZE};
+use crate::{
+    ATTENUATION_LIMIT_LINEAR, DF_BINS, DF_LOOKAHEAD, DF_ORDER, ERB_BANDS, FFT_BINS, FRAME_SIZE,
+};
 
 const CONV_LOOKAHEAD: usize = 2;
 const NORMALIZATION_ALPHA: f32 = 0.99;
+const NOISY_HISTORY_LENGTH: usize = if DF_ORDER > DF_LOOKAHEAD {
+    DF_ORDER
+} else {
+    DF_LOOKAHEAD
+};
+const NOISY_OUTPUT_INDEX: usize = NOISY_HISTORY_LENGTH - DF_LOOKAHEAD - 1;
 
 pub(crate) struct Features {
     pub(crate) erb: [f32; ERB_BANDS],
@@ -18,6 +26,7 @@ pub(crate) struct Features {
 pub(crate) struct DspState {
     state: DFState,
     current_spectrum: Vec<Complex32>,
+    enhanced_spectrum: Vec<Complex32>,
     noisy_spectra: VecDeque<Vec<Complex32>>,
     masked_spectra: VecDeque<Vec<Complex32>>,
     mean_norm_state: [f32; ERB_BANDS],
@@ -30,8 +39,9 @@ impl DspState {
         Self {
             state,
             current_spectrum: vec![Complex32::new(0.0, 0.0); FFT_BINS],
+            enhanced_spectrum: vec![Complex32::new(0.0, 0.0); FFT_BINS],
             noisy_spectra: std::iter::repeat_with(|| vec![Complex32::new(0.0, 0.0); FFT_BINS])
-                .take(DF_ORDER.max(DF_LOOKAHEAD))
+                .take(NOISY_HISTORY_LENGTH)
                 .collect(),
             masked_spectra: std::iter::repeat_with(|| vec![Complex32::new(0.0, 0.0); FFT_BINS])
                 .take(DF_ORDER + CONV_LOOKAHEAD)
@@ -43,10 +53,8 @@ impl DspState {
 
     pub(crate) fn analyze(&mut self, input: &[f32; FRAME_SIZE]) -> Features {
         self.state.analysis(input, &mut self.current_spectrum);
-        self.noisy_spectra.pop_front();
-        self.noisy_spectra.push_back(self.current_spectrum.clone());
-        self.masked_spectra.pop_front();
-        self.masked_spectra.push_back(self.current_spectrum.clone());
+        advance_spectrum_history(&mut self.noisy_spectra, &self.current_spectrum);
+        advance_spectrum_history(&mut self.masked_spectra, &self.current_spectrum);
 
         let mut erb = [0.0; ERB_BANDS];
         compute_band_corr(
@@ -89,10 +97,11 @@ impl DspState {
                 &self.state.erb,
             );
         }
-        let mut enhanced = self.masked_spectra[masked_index].clone();
+        self.enhanced_spectrum
+            .copy_from_slice(&self.masked_spectra[masked_index]);
         if let Some(coefficients) = coefficients {
             assert_eq!(coefficients.len(), DF_BINS * DF_ORDER * 2);
-            for (bin, enhanced_bin) in enhanced.iter_mut().enumerate().take(DF_BINS) {
+            for (bin, enhanced_bin) in self.enhanced_spectrum.iter_mut().enumerate().take(DF_BINS) {
                 let mut filtered = Complex32::new(0.0, 0.0);
                 for order in 0..DF_ORDER {
                     let coefficient_index = bin * DF_ORDER * 2 + order * 2;
@@ -105,8 +114,21 @@ impl DspState {
                 *enhanced_bin = filtered;
             }
         }
-        self.state.synthesis(&mut enhanced, output);
+        limit_attenuation(
+            &mut self.enhanced_spectrum,
+            &self.noisy_spectra[NOISY_OUTPUT_INDEX],
+            ATTENUATION_LIMIT_LINEAR,
+        );
+        self.state.synthesis(&mut self.enhanced_spectrum, output);
     }
+}
+
+fn advance_spectrum_history(history: &mut VecDeque<Vec<Complex32>>, current: &[Complex32]) {
+    let mut spectrum = history
+        .pop_front()
+        .expect("spectrum histories are initialized with fixed capacity");
+    spectrum.copy_from_slice(current);
+    history.push_back(spectrum);
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -124,6 +146,14 @@ fn apply_mask(spectrum: &mut [Complex32], mask: &[f32], erb_widths: &[usize]) {
     }
 }
 
+fn limit_attenuation(enhanced: &mut [Complex32], noisy: &[Complex32], dry_mix: f32) {
+    debug_assert_eq!(enhanced.len(), noisy.len());
+    debug_assert!((0.0..=1.0).contains(&dry_mix));
+    for (enhanced, noisy) in enhanced.iter_mut().zip(noisy) {
+        *enhanced = *enhanced * (1.0 - dry_mix) + *noisy * dry_mix;
+    }
+}
+
 impl Default for DspState {
     fn default() -> Self {
         Self::new()
@@ -132,8 +162,11 @@ impl Default for DspState {
 
 #[cfg(test)]
 mod tests {
-    use super::{DspState, apply_mask, linear_state};
-    use crate::{ALGORITHM_LATENCY_SAMPLES, ERB_BANDS, FFT_BINS, FRAME_SIZE};
+    use super::{DspState, apply_mask, limit_attenuation, linear_state};
+    use crate::{
+        ALGORITHM_LATENCY_SAMPLES, ATTENUATION_LIMIT_DB, ATTENUATION_LIMIT_LINEAR, ERB_BANDS,
+        FFT_BINS, FRAME_SIZE,
+    };
     use df::Complex32;
 
     #[test]
@@ -157,6 +190,21 @@ mod tests {
         let mut spectrum = vec![Complex32::new(1.0, -0.5); FFT_BINS];
         apply_mask(&mut spectrum, &[0.0; ERB_BANDS], &dsp.state.erb);
         assert!(spectrum.iter().all(|value| value.norm_sqr() == 0.0));
+    }
+
+    #[test]
+    fn attenuation_limit_mixes_back_twelve_db_of_the_noisy_spectrum() {
+        let noisy = vec![Complex32::new(0.8, -0.4); FFT_BINS];
+        let mut enhanced = vec![Complex32::new(0.0, 0.0); FFT_BINS];
+
+        limit_attenuation(&mut enhanced, &noisy, ATTENUATION_LIMIT_LINEAR);
+
+        let measured_db = -20.0 * ATTENUATION_LIMIT_LINEAR.log10();
+        assert!((measured_db - ATTENUATION_LIMIT_DB).abs() <= 1.0e-5);
+        for (actual, original) in enhanced.iter().zip(noisy) {
+            assert!((actual.re - original.re * ATTENUATION_LIMIT_LINEAR).abs() <= f32::EPSILON);
+            assert!((actual.im - original.im * ATTENUATION_LIMIT_LINEAR).abs() <= f32::EPSILON);
+        }
     }
 
     #[test]

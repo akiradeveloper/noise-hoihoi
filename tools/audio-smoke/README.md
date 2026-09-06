@@ -6,11 +6,11 @@ three seconds, and checks frame count, RMS, tone amplitude, and clipping. It
 tests VB-CABLE without involving a physical microphone or the GUI.
 
 `just build-windows` cross-builds the standalone test to
-`out/NoiseHoiHoi-v0.2-audio-smoke.exe`. Run it on Windows 11 x64 after
+`out/NoiseHoiHoi-v0.4-audio-smoke.exe`. Run it on Windows 11 x64 after
 installing VB-CABLE and restarting Windows:
 
 ```powershell
-.\NoiseHoiHoi-v0.2-audio-smoke.exe
+.\NoiseHoiHoi-v0.4-audio-smoke.exe
 ```
 
 Use `--seconds N` to measure from 1 to 30 seconds. A successful run prints

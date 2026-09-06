@@ -15,6 +15,7 @@ pub(crate) struct NetworkOutput {
     pub(crate) mask: Option<Vec<f32>>,
     pub(crate) coefficients: Option<Vec<f32>>,
     pub(crate) local_snr_db: f32,
+    pub(crate) voice_protected: bool,
 }
 
 pub(crate) struct StreamingNetwork {
@@ -31,11 +32,7 @@ pub(crate) struct StreamingNetwork {
 }
 
 impl StreamingNetwork {
-    pub(crate) fn new_cpu() -> Self {
-        Self::new(Device::flex())
-    }
-
-    fn new(device: Device) -> Self {
+    pub(crate) fn new(device: Device) -> Self {
         let encoder = enc::Model::from_bytes(
             Bytes::from_bytes_vec(include_bytes!("../model/enc.bpk").to_vec()),
             &device,
@@ -79,6 +76,7 @@ impl StreamingNetwork {
         &mut self,
         erb: [f32; ERB_BANDS],
         complex_features: &[[f32; DF_BINS]; 2],
+        protect_voice: bool,
     ) -> NetworkOutput {
         self.erb_history.rotate_left(1);
         self.erb_history[ENCODER_CONTEXT - 1] = erb;
@@ -116,7 +114,8 @@ impl StreamingNetwork {
             .try_to_vec::<f32>()
             .expect("encoder local SNR must be f32")[0];
 
-        let (apply_mask, zero_mask, apply_df) = processing_stages(local_snr_db);
+        let voice_protected = protect_voice;
+        let (apply_mask, zero_mask, apply_df) = processing_stages(local_snr_db, protect_voice);
         let mask = if apply_mask {
             let (mask, state0, state1) = self.erb_decoder.forward_stream(
                 encoded.embedding.clone(),
@@ -164,12 +163,15 @@ impl StreamingNetwork {
             mask,
             coefficients,
             local_snr_db,
+            voice_protected,
         }
     }
 }
 
-fn processing_stages(local_snr_db: f32) -> (bool, bool, bool) {
-    if local_snr_db < -10.0 {
+fn processing_stages(local_snr_db: f32, protect_voice: bool) -> (bool, bool, bool) {
+    if protect_voice {
+        (false, false, false)
+    } else if local_snr_db < crate::NOISE_ONLY_THRESHOLD_DB {
         (false, true, false)
     } else if local_snr_db > 30.0 {
         (false, false, false)
@@ -201,10 +203,17 @@ mod tests {
 
     #[test]
     fn stage_thresholds_match_the_official_runtime() {
-        assert_eq!(processing_stages(-10.1), (false, true, false));
-        assert_eq!(processing_stages(-10.0), (true, false, true));
-        assert_eq!(processing_stages(20.0), (true, false, true));
-        assert_eq!(processing_stages(20.1), (true, false, false));
-        assert_eq!(processing_stages(30.1), (false, false, false));
+        assert_eq!(processing_stages(-10.1, false), (false, true, false));
+        assert_eq!(processing_stages(-10.0, false), (true, false, true));
+        assert_eq!(processing_stages(20.0, false), (true, false, true));
+        assert_eq!(processing_stages(20.1, false), (true, false, false));
+        assert_eq!(processing_stages(30.1, false), (false, false, false));
+    }
+
+    #[test]
+    fn voiced_guard_bypasses_model_processing() {
+        assert_eq!(processing_stages(-10.1, true), (false, false, false));
+        assert_eq!(processing_stages(-10.0, true), (false, false, false));
+        assert_eq!(processing_stages(10.0, true), (false, false, false));
     }
 }

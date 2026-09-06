@@ -9,6 +9,7 @@ mod vb_cable;
 
 pub use config::{AudioDevice, EngineConfig, PIPELINE_SAMPLE_RATE};
 pub use metrics::{EngineMetrics, EngineState, MetricsHandle};
+pub use noise_net::{ComputeProcessor, ComputeRuntime, ProcessorKind};
 pub use platform::{RunningAudioEngine, input_devices, start};
 pub use processor::{AudioProcessor, NoiseReduction, PassThrough};
 pub use signal_monitor::SignalMonitorSample;
@@ -18,6 +19,12 @@ pub use vb_cable::{
 };
 
 use thiserror::Error;
+
+/// Enumerate compute processors supported by the current `NoiseNet` runtimes.
+#[must_use]
+pub fn compute_processors() -> Vec<ComputeProcessor> {
+    noise_net::processors()
+}
 
 /// Errors surfaced by the audio engine to the UI.
 #[derive(Debug, Error)]

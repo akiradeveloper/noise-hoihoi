@@ -169,11 +169,13 @@ impl<P: AudioProcessor> Worker<P> {
         let output = &mut self.output;
         let signal_monitor = &mut self.signal_monitor;
         let metrics = &self.metrics;
-        let processed = self.processor.process(samples, |input, output_samples| {
+        let report = self.processor.process(samples, |input, output_samples| {
             publish(output, signal_monitor, metrics, input, output_samples)
         })?;
         self.metrics
-            .add_processed_frames(u64::try_from(processed).unwrap_or(u64::MAX));
+            .add_processed_frames(u64::try_from(report.processed_samples).unwrap_or(u64::MAX));
+        self.metrics
+            .observe_processing(report.max_processing_time, report.deadline_misses);
         Ok(())
     }
 }

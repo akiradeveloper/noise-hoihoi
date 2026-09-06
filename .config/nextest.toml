@@ -1,5 +1,6 @@
 [test-groups]
 noisenet-cpu = { max-threads = 1 }
+noisenet-wgpu = { max-threads = 1 }
 
 [profile.default]
 retries = 0
@@ -10,6 +11,11 @@ default-filter = "not binary(stress_cpu)"
 filter = "package(noise-net) and binary(/_cpu$/)"
 test-group = "noisenet-cpu"
 slow-timeout = { period = "60s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = "package(noise-net) and binary(/_wgpu$/)"
+test-group = "noisenet-wgpu"
+slow-timeout = { period = "2m", terminate-after = 3 }
 
 [profile.noisenet-full]
 inherits = "default"

@@ -6,7 +6,7 @@ const STRESS_FRAMES: usize = 1_000;
 #[ignore = "long-running CPU test; run with `just test-noisenet-full`"]
 #[allow(clippy::cast_precision_loss)]
 fn sustained_stream_remains_finite() {
-    let mut net = NoiseNet::new_cpu().expect("Burn Flex is required for NoiseNet v0.3");
+    let mut net = NoiseNet::new_cpu().expect("Burn Flex is required for CPU inference");
     let mut peak = 0.0_f32;
     for frame_index in 0..STRESS_FRAMES {
         let input = std::array::from_fn(|sample| {
