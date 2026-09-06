@@ -8,8 +8,9 @@ use std::{
 
 use eframe::egui::{self, Color32, RichText};
 use noise_hoihoi_engine::{
-    AudioDevice, EngineConfig, EngineState, MetricsHandle, PassThrough, RunningAudioEngine,
-    SignalMonitorSample, VB_CABLE_RECORDING_ENDPOINT_NAME, input_devices, start,
+    AudioDevice, EngineConfig, EngineState, MetricsHandle, NoiseReduction, PassThrough,
+    RunningAudioEngine, SignalMonitorSample, VB_CABLE_RECORDING_ENDPOINT_NAME, input_devices,
+    start,
 };
 use serde::{Deserialize, Serialize};
 
@@ -46,6 +47,8 @@ pub fn run() -> eframe::Result {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Settings {
     input_device_id: Option<String>,
+    #[serde(default)]
+    noise_reduction: bool,
 }
 
 struct NoiseHoiHoiApp {
@@ -128,7 +131,12 @@ impl NoiseHoiHoiApp {
             return;
         };
         let config = EngineConfig::new(input_device_id);
-        match start(&config, PassThrough) {
+        let result = if self.settings.noise_reduction {
+            NoiseReduction::new_cpu().and_then(|processor| start(&config, processor))
+        } else {
+            start(&config, PassThrough)
+        };
+        match result {
             Ok(mut engine) => {
                 let monitor_open = self.signal_monitor_open.load(Ordering::Acquire);
                 engine.set_signal_monitor_enabled(monitor_open);
@@ -150,6 +158,7 @@ impl NoiseHoiHoiApp {
 
     fn draw_controls(&mut self, ui: &mut egui::Ui) {
         let selection_before = self.settings.input_device_id.clone();
+        let reduction_before = self.settings.noise_reduction;
         let mut refresh_requested = false;
         ui.horizontal(|ui| {
             ui.label("Input");
@@ -173,29 +182,27 @@ impl NoiseHoiHoiApp {
             refresh_requested = ui.button("Refresh").clicked();
         });
 
-        if refresh_requested {
-            self.stop();
-            self.refresh_devices();
-            if self.settings.input_device_id.is_some() {
-                self.start();
-            }
-        } else if selection_before != self.settings.input_device_id {
-            self.stop();
-            self.start();
-        }
-
         ui.horizontal(|ui| {
             ui.label("Output");
             ui.label(VB_CABLE_RECORDING_ENDPOINT_NAME);
         });
         ui.horizontal(|ui| {
             ui.label("Noise reduction");
-            let mut reduction = false;
-            ui.add_enabled(
-                false,
-                egui::Checkbox::new(&mut reduction, "Off (available in v0.3)"),
-            );
+            ui.checkbox(&mut self.settings.noise_reduction, "Enabled");
         });
+
+        if refresh_requested {
+            self.stop();
+            self.refresh_devices();
+            if self.settings.input_device_id.is_some() {
+                self.start();
+            }
+        } else if selection_before != self.settings.input_device_id
+            || reduction_before != self.settings.noise_reduction
+        {
+            self.stop();
+            self.start();
+        }
     }
 
     fn draw_status(&mut self, ui: &mut egui::Ui) {
@@ -327,7 +334,11 @@ impl NoiseHoiHoiApp {
                 let close_requested = ui.input(|input| input.viewport().close_requested());
                 if close_requested {
                     open.store(false, Ordering::Release);
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    // `Close` only queues another close request for a child
+                    // viewport. Hide it now; the next root pass stops declaring
+                    // the viewport and lets eframe destroy it.
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Visible(false));
                     ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
                     return;
                 }

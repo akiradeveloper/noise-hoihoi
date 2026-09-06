@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "NoiseNet/crates/noise-net",
     "NoiseHoiHoi/crates/noise-hoihoi-app",
     "NoiseHoiHoi/crates/noise-hoihoi-engine",
     "tools/audio-smoke",
@@ -7,7 +8,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Akira Hayakawa"]
@@ -16,9 +17,13 @@ repository = "https://github.com/akiradeveloper/noise-hoihoi"
 
 [workspace.dependencies]
 anyhow = "1.0.99"
+burn = { version = "=0.22.0-pre.3", default-features = false, features = ["flex", "rayon", "simd", "std", "store"] }
+burn-store = { version = "=0.22.0-pre.3", default-features = false, features = ["std"] }
 clap = { version = "4.5.47", features = ["derive"] }
 cpal = "0.18.2"
+df = { package = "deep_filter", version = "=0.2.5", default-features = false }
 eframe = { version = "0.36.1", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+hound = "3.5.1"
 rtrb = "0.4.0"
 rubato = { version = "5.0.0", default-features = false }
 serde = { version = "1.0.219", features = ["derive"] }

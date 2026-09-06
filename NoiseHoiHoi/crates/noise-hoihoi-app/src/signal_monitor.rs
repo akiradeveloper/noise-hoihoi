@@ -158,7 +158,7 @@ pub(super) fn draw(
         ui.colored_label(Color32::LIGHT_RED, error);
     }
     ui.add_space(6.0);
-    ui.weak("Noise reduction is Off in v0.2, so Difference should remain silent.");
+    ui.weak("Input is aligned to the processor delay before calculating Difference.");
 }
 
 fn draw_plot(

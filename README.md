@@ -1,21 +1,22 @@
 # NoiseHoiHoi
 
-NoiseHoiHoi is a desktop audio application for streamers. Version 0.2 targets
-Windows 11 x64 and forwards a selected physical microphone through VB-CABLE
-without noise reduction. NoiseHoiHoi writes to `CABLE Input (VB-Audio Virtual
-Cable)`, and recording applications read from `CABLE Output (VB-Audio Virtual
-Cable)`. The route exists only while the GUI is running; there is no tray
-process or user-mode service.
+NoiseHoiHoi is a desktop audio application for streamers. Version 0.3 targets
+Windows 11 x64 and can pass a selected physical microphone through unchanged or
+reduce noise with DeepFilterNet3. The model runs with Burn 0.22.0-pre.3 on its
+Flex CPU backend. NoiseHoiHoi writes to `CABLE Input (VB-Audio Virtual Cable)`,
+and recording applications read from `CABLE Output (VB-Audio Virtual Cable)`.
+The route exists only while the GUI is running; there is no tray process or
+user-mode service.
 
 Use the `Signal monitor...` button at the bottom of the main window to open a
 separate live view of the processor input, output, and their difference.
-Because v0.2 still uses bit-exact pass-through, the difference is expected to
-remain silent.
+Its input trace is aligned to DeepFilterNet3's 30 ms algorithmic delay before
+the difference is calculated.
 
 ## Components
 
 - `NoiseHoiHoi`: the Rust GUI and real-time audio engine.
-- `NoiseNet`: the noise-reduction model implementation, introduced in v0.3.
+- `NoiseNet`: standalone Burn implementation of streaming DeepFilterNet3.
 - `packaging`: OS-specific installer definitions and build inputs.
 - `tools`: end-to-end validation utilities.
 
@@ -32,17 +33,25 @@ Platform-independent checks can run on any Rust host:
 just check
 ```
 
+Run the normal NoiseNet suite through cargo-nextest, or explicitly include its
+long-running CPU durability test:
+
+```sh
+just test-noisenet
+just test-noisenet-full
+```
+
 Build the optimized Windows application and installer locally with Docker:
 
 ```sh
 just build-windows
 ```
 
-The result is `out/NoiseHoiHoi-v0.2-setup.exe`. The build downloads the official
+The result is `out/NoiseHoiHoi-v0.3-setup.exe`. The build downloads the official
 VB-CABLE package, verifies its pinned SHA-256, expected driver identity, and
 catalog signer certificate, then embeds the unmodified package. The setup
 silently installs VB-CABLE when it is absent. A Windows restart is required
-after first install. It also emits `out/NoiseHoiHoi-v0.2-audio-smoke.exe` for
+after first install. It also emits `out/NoiseHoiHoi-v0.3-audio-smoke.exe` for
 validating the VB-CABLE bridge on Windows without installing a Rust toolchain.
 No Git push or hosted CI artifact is involved.
 

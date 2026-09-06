@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 - 2026-09-06
+
+- Added streaming DeepFilterNet3 inference in the standalone NoiseNet crate
+  using Burn 0.22.0-pre.3 and its Flex CPU backend.
+- Added embedded official model weights, a standalone WAV processor, pinned
+  official-reference tests, DSP/state tests, and an opt-in CPU durability test.
+- Added cargo-nextest profiles that serialize model suites.
+- Added a persisted noise-reduction On/Off control to NoiseHoiHoi.
+- Added fixed-frame adaptation and processor-delay alignment to the audio worker
+  and signal monitor.
+- Made the signal-monitor close button hide its native window immediately.
+
 ## 0.2.0 - 2026-09-05
 
 - Added a separate signal-monitor window showing the latest second of aligned

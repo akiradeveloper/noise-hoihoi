@@ -15,3 +15,12 @@ check:
     cargo test --workspace
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
     bash -n scripts/docker/*.sh
+
+# Run NoiseNet's normal unit and Flex CPU suites with process isolation.
+test-noisenet:
+    cargo nextest run -p noise-net
+    cargo test -p noise-net --doc
+
+# Include long-running NoiseNet durability tests.
+test-noisenet-full:
+    cargo nextest run -P noisenet-full -p noise-net --run-ignored all

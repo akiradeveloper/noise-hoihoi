@@ -16,6 +16,7 @@ use rubato::{
 
 use crate::{
     AudioProcessor, EngineError, PIPELINE_SAMPLE_RATE, SignalMonitorSample, metrics::SharedMetrics,
+    processor::ProcessorPipeline,
 };
 
 const PROCESSING_CHUNK_MS: usize = 10;
@@ -58,7 +59,9 @@ pub(super) fn spawn_worker<P: AudioProcessor>(
             .map_err(|error| EngineError::Start(format!("failed to create resampler: {error}")))?;
     let input_buffer = vec![vec![0.0_f32; resampler.input_frames_max()]];
     let output_buffer = vec![vec![0.0_f32; resampler.output_frames_max()]];
-    let monitor_input_buffer = vec![0.0_f32; resampler.output_frames_max()];
+    let processor = ProcessorPipeline::new(processor)
+        .map_err(|message| EngineError::Start(message.to_owned()))?;
+    let processor_frame_size = processor.frame_size();
 
     thread::Builder::new()
         .name("noise-hoihoi-audio".to_owned())
@@ -72,7 +75,7 @@ pub(super) fn spawn_worker<P: AudioProcessor>(
                 resampler,
                 input_buffer,
                 output_buffer,
-                monitor_input_buffer,
+                processor_frame_size,
                 signal_monitor,
                 stop,
                 metrics,
@@ -90,13 +93,13 @@ pub(super) fn spawn_worker<P: AudioProcessor>(
 struct Worker<P> {
     input: Consumer<f32>,
     output: Producer<f32>,
-    processor: P,
+    processor: ProcessorPipeline<P>,
     config: WorkerConfig,
     base_ratio: f64,
     resampler: Async<f32>,
     input_buffer: Vec<Vec<f32>>,
     output_buffer: Vec<Vec<f32>>,
-    monitor_input_buffer: Vec<f32>,
+    processor_frame_size: Option<usize>,
     signal_monitor: SignalMonitorWriter,
     stop: Arc<AtomicBool>,
     metrics: Arc<SharedMetrics>,
@@ -120,7 +123,9 @@ impl<P: AudioProcessor> Worker<P> {
 
             let input_frames = self.resampler.input_frames_next();
             let output_frames = self.resampler.output_frames_next();
-            if self.input.slots() < input_frames || self.output.slots() < output_frames {
+            let output_slots_needed =
+                output_frames.saturating_add(self.processor_frame_size.unwrap_or_default());
+            if self.input.slots() < input_frames || self.output.slots() < output_slots_needed {
                 thread::park_timeout(Duration::from_millis(1));
                 continue;
             }
@@ -145,39 +150,7 @@ impl<P: AudioProcessor> Worker<P> {
                 .process_into_buffer(&input_adapter, &mut output_adapter, None)
                 .map_err(|error| format!("audio resampling failed: {error}"))?;
 
-            let monitor_enabled = self.signal_monitor.enabled.load(Ordering::Acquire);
-            if monitor_enabled {
-                self.monitor_input_buffer[..produced_frames]
-                    .copy_from_slice(&self.output_buffer[0][..produced_frames]);
-            }
-
-            self.processor
-                .process(&mut self.output_buffer[0][..produced_frames]);
-
-            if monitor_enabled {
-                let mut dropped_frames = 0_u64;
-                for (&input, &output) in self.monitor_input_buffer[..produced_frames]
-                    .iter()
-                    .zip(&self.output_buffer[0][..produced_frames])
-                {
-                    let sample = SignalMonitorSample::new(input, output);
-                    if self.signal_monitor.producer.push(sample).is_err() {
-                        dropped_frames += 1;
-                    }
-                }
-                if dropped_frames != 0 {
-                    self.metrics
-                        .add_dropped_signal_monitor_frames(dropped_frames);
-                }
-            }
-
-            for &sample in &self.output_buffer[0][..produced_frames] {
-                self.output
-                    .push(sample)
-                    .map_err(|_| "audio worker output buffer overflow".to_owned())?;
-            }
-            self.metrics
-                .add_processed_frames(u64::try_from(produced_frames).unwrap_or(u64::MAX));
+            self.process_resampled(produced_frames)?;
             self.metrics
                 .set_buffered_output_frames(self.buffered_output_frames());
         }
@@ -190,6 +163,47 @@ impl<P: AudioProcessor> Worker<P> {
             .output_capacity
             .saturating_sub(self.output.slots())
     }
+
+    fn process_resampled(&mut self, produced_frames: usize) -> Result<(), String> {
+        let samples = &self.output_buffer[0][..produced_frames];
+        let output = &mut self.output;
+        let signal_monitor = &mut self.signal_monitor;
+        let metrics = &self.metrics;
+        let processed = self.processor.process(samples, |input, output_samples| {
+            publish(output, signal_monitor, metrics, input, output_samples)
+        })?;
+        self.metrics
+            .add_processed_frames(u64::try_from(processed).unwrap_or(u64::MAX));
+        Ok(())
+    }
+}
+
+fn publish(
+    output_ring: &mut Producer<f32>,
+    signal_monitor: &mut SignalMonitorWriter,
+    metrics: &SharedMetrics,
+    aligned_input: &[f32],
+    output: &[f32],
+) -> Result<(), String> {
+    let monitor_enabled = signal_monitor.enabled.load(Ordering::Acquire);
+    let mut dropped_frames = 0_u64;
+    for (&input, &output) in aligned_input.iter().zip(output) {
+        if monitor_enabled
+            && signal_monitor
+                .producer
+                .push(SignalMonitorSample::new(input, output))
+                .is_err()
+        {
+            dropped_frames += 1;
+        }
+        output_ring
+            .push(output)
+            .map_err(|_| "audio worker output buffer overflow".to_owned())?;
+    }
+    if dropped_frames != 0 {
+        metrics.add_dropped_signal_monitor_frames(dropped_frames);
+    }
+    Ok(())
 }
 
 pub(super) fn stop_worker(stop: &AtomicBool, worker: JoinHandle<()>) {

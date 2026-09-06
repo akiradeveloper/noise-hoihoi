@@ -10,7 +10,7 @@ mod vb_cable;
 pub use config::{AudioDevice, EngineConfig, PIPELINE_SAMPLE_RATE};
 pub use metrics::{EngineMetrics, EngineState, MetricsHandle};
 pub use platform::{RunningAudioEngine, input_devices, start};
-pub use processor::{AudioProcessor, PassThrough};
+pub use processor::{AudioProcessor, NoiseReduction, PassThrough};
 pub use signal_monitor::SignalMonitorSample;
 pub use vb_cable::{
     VB_CABLE_PLAYBACK_ENDPOINT_NAME, VB_CABLE_RECORDING_ENDPOINT_NAME,
@@ -41,6 +41,9 @@ pub enum EngineError {
 
     #[error("failed to start audio: {0}")]
     Start(String),
+
+    #[error("failed to initialize noise reduction: {0}")]
+    NoiseReduction(String),
 
     #[error("invalid engine configuration: {0}")]
     InvalidConfiguration(String),

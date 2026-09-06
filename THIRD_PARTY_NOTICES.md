@@ -1,5 +1,27 @@
 # Third-party notices
 
+## DeepFilterNet3
+
+NoiseNet embeds model weights converted from the official DeepFilterNet3 ONNX
+archive and contains generated graph code based on that model. DeepFilterNet is
+Copyright (c) 2021 Hendrik Schröter and is dual-licensed under MIT or
+Apache-2.0; NoiseHoiHoi uses the MIT option.
+
+Origin: https://github.com/Rikorose/DeepFilterNet
+
+The selected license is installed as
+`licenses/DeepFilterNet-LICENSE-MIT.txt`.
+
+## NoiseNet test speech
+
+NoiseNet's source test data includes a resampled excerpt of Ian Skillen's
+public-domain LibriVox reading, obtained from Voice Zero. Voice Zero dedicates
+files in its `voices` directory to the public domain under CC0 1.0. This test
+fixture is not installed with the Windows application. Its exact provenance
+and hashes are recorded in `NoiseNet/crates/noise-net/testdata/README.md`.
+
+Origin: https://github.com/OwenTyme/voice-zero
+
 ## Rust dependencies
 
 The Windows application includes open-source Rust dependencies. The exact

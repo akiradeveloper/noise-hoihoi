@@ -153,6 +153,7 @@ cp -- "$app_binary" "$stage/$app_filename"
 cp -a -- "$vbcable_package/." "$stage/third-party/vb-cable/"
 cp -- "$repository_root/LICENSE" "$stage/licenses/LICENSE-MIT"
 cp -- "$repository_root/THIRD_PARTY_NOTICES.md" "$stage/licenses/"
+cp -- "$repository_root/packaging/licenses/DeepFilterNet-LICENSE-MIT.txt" "$stage/licenses/"
 cp -- "$repository_root/packaging/windows/VB-CABLE-NOTICE.txt" "$stage/licenses/"
 cp -- /usr/share/doc/nsis/copyright "$stage/licenses/NSIS-copyright"
 cp -- /usr/share/common-licenses/Apache-2.0 "$stage/licenses/Apache-2.0.txt"
@@ -166,7 +167,7 @@ mkdir -p "$rust_license_root"
 while read -r package_name package_version _; do
     package_version="${package_version#v}"
     case "$package_name" in
-        noise-hoihoi-app | noise-hoihoi-engine)
+        noise-hoihoi-app | noise-hoihoi-engine | noise-net)
             continue
             ;;
     esac
@@ -221,8 +222,18 @@ while read -r package_name package_version _; do
             | sort -z
     )
     if ((license_count == 0)); then
-        case "$declared_license" in
-            *Apache-2.0* | BSL-1.0) ;;
+        case "$package_name:$declared_license" in
+            pulp-wasm-simd-flag:MIT)
+                cp -- \
+                    "$repository_root/packaging/licenses/pulp-LICENSE-MIT.txt" \
+                    "$package_license_root/LICENSE-MIT"
+                ;;
+            realfft:MIT)
+                cp -- \
+                    "$repository_root/packaging/licenses/realfft-LICENSE-MIT.txt" \
+                    "$package_license_root/LICENSE-MIT"
+                ;;
+            *:*Apache-2.0* | *:BSL-1.0) ;;
             *)
                 echo "Rust dependency $package_name $package_version has no bundled license file or supported common-license fallback." >&2
                 exit 1
@@ -301,6 +312,7 @@ for required_payload in \
     BUILD-INFO.txt \
     licenses/Apache-2.0.txt \
     licenses/BSL-1.0.txt \
+    licenses/DeepFilterNet-LICENSE-MIT.txt \
     licenses/RUST-DEPENDENCIES.txt \
     licenses/VB-CABLE-NOTICE.txt \
     third-party/vb-cable/VBCABLE_Setup_x64.exe; do
