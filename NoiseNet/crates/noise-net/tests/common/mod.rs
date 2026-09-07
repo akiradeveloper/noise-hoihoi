@@ -1,8 +1,6 @@
 use std::io::Cursor;
 
-use noise_net::{
-    ALGORITHM_LATENCY_SAMPLES, ATTENUATION_LIMIT_DB, FRAME_SIZE, NoiseNet, SAMPLE_RATE,
-};
+use noise_net::{ALGORITHM_LATENCY_SAMPLES, FRAME_SIZE, NoiseNet, SAMPLE_RATE};
 
 #[path = "../../testdata/reference_input.rs"]
 mod reference_input;
@@ -33,18 +31,9 @@ pub fn expected_reference() -> Vec<f32> {
     assert_eq!(spec.channels, 1);
     assert_eq!(spec.sample_rate, SAMPLE_RATE);
     assert_eq!(spec.bits_per_sample, 16);
-    let dry_mix = 10.0_f32.powf(-ATTENUATION_LIMIT_DB / 20.0);
     reader
         .into_samples::<i16>()
-        .enumerate()
-        .map(|(index, sample)| {
-            let enhanced =
-                f32::from(sample.expect("reference WAV must be valid")) / f32::from(i16::MAX);
-            let dry = index
-                .checked_sub(ALGORITHM_LATENCY_SAMPLES)
-                .map_or(0.0, reference_input::sample);
-            enhanced * (1.0 - dry_mix) + dry * dry_mix
-        })
+        .map(|sample| f32::from(sample.expect("reference WAV must be valid")) / f32::from(i16::MAX))
         .collect()
 }
 
@@ -75,30 +64,44 @@ pub fn assert_sustained_vowel_is_protected(net: &mut NoiseNet, fundamental_hz: f
 
     net.reset();
     let mut protected_frames = 0;
-    let mut protected_streak = 0;
+    let mut input_energy = 0.0;
+    let mut output_energy = 0.0;
+    let mut error_energy = 0.0;
     for (frame_index, frame) in input.chunks_exact(FRAME_SIZE).enumerate() {
         let frame: &[f32; FRAME_SIZE] = frame.try_into().expect("chunk size is fixed");
         let mut output = [0.0; FRAME_SIZE];
         net.process_frame(frame, &mut output);
         if net.last_voice_protected() {
             protected_frames += 1;
-            protected_streak += 1;
-            if protected_streak >= 3 {
-                let expected_start = frame_index * FRAME_SIZE - ALGORITHM_LATENCY_SAMPLES;
-                for (&actual, &expected) in output
-                    .iter()
-                    .zip(&input[expected_start..expected_start + FRAME_SIZE])
-                {
-                    assert!((actual - expected).abs() <= 2.0e-5);
-                }
+        }
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        if frame_index >= 10 {
+            let expected_start = frame_index * FRAME_SIZE - ALGORITHM_LATENCY_SAMPLES;
+            for (&actual, &expected) in output
+                .iter()
+                .zip(&input[expected_start..expected_start + FRAME_SIZE])
+            {
+                input_energy += expected * expected;
+                output_energy += actual * actual;
+                error_energy += (actual - expected).powi(2);
             }
-        } else {
-            protected_streak = 0;
         }
     }
     assert!(
-        protected_frames >= frames.saturating_sub(10),
+        protected_frames >= frames.saturating_sub(12),
         "sustained {fundamental_hz} Hz vowel should trigger voice protection, got {protected_frames}/{frames} frames"
     );
-    assert!(protected_streak >= 3);
+    let attenuation_db = 10.0 * (input_energy / output_energy).log10();
+    let signal_to_error_db = 10.0 * (input_energy / error_energy).log10();
+    eprintln!(
+        "sustained {fundamental_hz} Hz vowel: attenuation={attenuation_db:.2} dB, signal/error={signal_to_error_db:.2} dB"
+    );
+    assert!(
+        attenuation_db.abs() <= 3.0,
+        "vowel level changed by {attenuation_db:.2} dB"
+    );
+    assert!(
+        signal_to_error_db >= 12.0,
+        "vowel distortion: {signal_to_error_db:.2} dB"
+    );
 }

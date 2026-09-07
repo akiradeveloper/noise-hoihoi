@@ -2,13 +2,16 @@
 
 mod dsp;
 mod generated;
+mod level;
 mod network;
+mod recovery;
 mod voicing;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use dsp::DspState;
-use network::StreamingNetwork;
+use level::InputLevel;
+use network::{InferenceMode, StreamingNetwork};
 use thiserror::Error;
 use voicing::VoicedGuard;
 
@@ -23,9 +26,6 @@ pub const DF_BINS: usize = 96;
 pub const DF_ORDER: usize = 5;
 pub const DF_LOOKAHEAD: usize = 2;
 pub const ALGORITHM_LATENCY_SAMPLES: usize = (FFT_SIZE - FRAME_SIZE) + DF_LOOKAHEAD * FRAME_SIZE;
-/// Maximum attenuation applied by the default product configuration.
-pub const ATTENUATION_LIMIT_DB: f32 = 12.0;
-pub(crate) const ATTENUATION_LIMIT_LINEAR: f32 = 0.251_188_64;
 /// Local SNR below which the upstream runtime considers a frame noise-only.
 pub(crate) const NOISE_ONLY_THRESHOLD_DB: f32 = -10.0;
 
@@ -40,6 +40,7 @@ pub struct NoiseNet {
     network: StreamingNetwork,
     dsp: DspState,
     voiced_guard: VoicedGuard,
+    input_level: InputLevel,
     last_local_snr_db: f32,
     last_voice_protected: bool,
 }
@@ -73,6 +74,7 @@ impl NoiseNet {
                 network: StreamingNetwork::new(device),
                 dsp: DspState::new(),
                 voiced_guard: VoicedGuard::new(),
+                input_level: InputLevel::default(),
                 last_local_snr_db: -15.0,
                 last_voice_protected: false,
             };
@@ -91,13 +93,22 @@ impl NoiseNet {
         }
     }
 
-    /// Process one 10 ms frame with the product's fixed voice protection.
+    /// Process one 10 ms frame with continuous inference, adaptive feature
+    /// levels and coherent speech protection. Synthesis preserves input scale.
     pub fn process_frame(&mut self, input: &[f32; FRAME_SIZE], output: &mut [f32; FRAME_SIZE]) {
-        let protect_voice = self.voiced_guard.update(input);
-        self.process_frame_inner(input, output, protect_voice);
+        let feature_gain = self.input_level.update(input);
+        let protect_voice = self.voiced_guard.update(&input.map(|v| v * feature_gain));
+        self.process_frame_inner(
+            input,
+            output,
+            protect_voice,
+            feature_gain,
+            InferenceMode::Continuous,
+        );
     }
 
-    /// Process one 10 ms frame without the product's voice protection.
+    /// Process one 10 ms frame with the upstream reference pipeline, including
+    /// its processing thresholds and without feature-level adaptation or protection.
     ///
     /// This entry point exists for exact model-reference diagnostics. Product
     /// audio paths should use [`Self::process_frame`]. Reset the stream before
@@ -107,7 +118,7 @@ impl NoiseNet {
         input: &[f32; FRAME_SIZE],
         output: &mut [f32; FRAME_SIZE],
     ) {
-        self.process_frame_inner(input, output, false);
+        self.process_frame_inner(input, output, false, 1.0, InferenceMode::Reference);
     }
 
     fn process_frame_inner(
@@ -115,18 +126,18 @@ impl NoiseNet {
         input: &[f32; FRAME_SIZE],
         output: &mut [f32; FRAME_SIZE],
         protect_voice: bool,
+        feature_gain: f32,
+        mode: InferenceMode,
     ) {
-        let features = self.dsp.analyze(input);
-        let inference = self
-            .network
-            .infer(features.erb, &features.complex, protect_voice);
-        self.dsp.synthesize(
+        let features = self.dsp.analyze(input, feature_gain);
+        let inference = self.network.infer(features.erb, &features.complex, mode);
+        self.last_voice_protected = self.dsp.synthesize(
             inference.mask.as_deref(),
             inference.coefficients.as_deref(),
+            protect_voice,
             output,
         );
         self.last_local_snr_db = inference.local_snr_db;
-        self.last_voice_protected = inference.voice_protected;
     }
 
     /// Reset all recurrent, normalization, FFT, and history state.
@@ -134,6 +145,7 @@ impl NoiseNet {
         self.network.reset();
         self.dsp = DspState::new();
         self.voiced_guard = VoicedGuard::new();
+        self.input_level = InputLevel::default();
         self.last_local_snr_db = -15.0;
         self.last_voice_protected = false;
     }
@@ -154,7 +166,7 @@ impl NoiseNet {
                 amplitude * (f32::from(bits) / f32::from(u16::MAX) * 2.0 - 1.0)
             });
             let mut output = [0.0; FRAME_SIZE];
-            self.process_frame_unprotected(&input, &mut output);
+            self.process_frame(&input, &mut output);
         }
     }
 
@@ -168,7 +180,7 @@ impl NoiseNet {
         self.last_local_snr_db
     }
 
-    /// Whether voice protection bypassed model processing for the most recent frame.
+    /// Whether voice-band protection or speech recovery was active for the latest spectral frame.
     #[must_use]
     pub const fn last_voice_protected(&self) -> bool {
         self.last_voice_protected

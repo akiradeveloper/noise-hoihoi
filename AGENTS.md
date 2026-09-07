@@ -42,12 +42,9 @@ CUDA/ROCm/WGPUのバックエンドで動作可能にすること。
 
 sample-sound/にチューニングに使うためのサンプル音源がある。
 
-- no-voice: 無音
-- low-a: 低い「あ」
-- high-a: 高い「あ」
-- sentense: 文章
+- aiueo: 50音を読む
 - keyboard: キーボードの打鍵音
-- xbox-controller: XBoxコントローラの音
+- controller: XBoxコントローラの音
 
 ## NoiseHoiHoi
 

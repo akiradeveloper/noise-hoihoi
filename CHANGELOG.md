@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.0 - Unreleased
+
+- Remove the fixed 12 dB attenuation limit that mixed controller and keyboard
+  noise back into the output after model suppression.
+- Keep both DeepFilterNet decoders and their recurrent histories running on
+  every product frame, removing threshold-driven global muting and decoder skips.
+- Adapt the level of model features and voice detection to quiet input while
+  synthesizing from the original waveform, without changing output gain.
+- Protect coherent weak harmonics across the full spectrum and account for
+  phase cancellation when applying the speech response floor.
+- Ease model attenuation briefly when recent speech and an abrupt sound are
+  followed by a voice-detection gap, reducing short voice dropouts during
+  controller operation while preserving the model estimate's phase and zeros.
+  Recovery is bounded and can leave more residual noise during overlap.
+- Preserve the 30 ms algorithmic delay and the independent upstream-reference
+  processing path. Model weights remain unchanged and inference-only.
+- Add quiet-voice, level-transition, high-harmonic and phase-preservation tests.
+- Add a strong-controller overlap regression that checks short voice intervals
+  and reference error together, plus recovery gain and expiry tests.
+- Add `noise-bench` for hashed speech/noise mixtures, product/reference runs,
+  continuous-stream evaluation and scoring recordings from external processors.
+- Use the updated project WAVs in voice/mixed-noise regression tests, and allow
+  explicit source-channel selection in the benchmark without automatic downmix.
+- Align and smooth voice protection without adding user-facing tuning controls;
+  the protection floor rejects short spectral bursts using the existing lookahead.
+- Add recorded controller and voice regression fixtures, including speech
+  overlap, different click levels and offsets, and voice-preservation checks.
+
 ## 0.4.0 - 2026-09-06
 
 - Added a standalone NoiseNet runtime crate that discovers the host CPU with

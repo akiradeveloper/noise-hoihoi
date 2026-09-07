@@ -1,4 +1,4 @@
-# Windows v0.4 installer
+# Windows v0.5 installer
 
 Run the release build from a Linux host with Docker:
 
@@ -9,8 +9,8 @@ just build-windows
 It builds the Rust application with the optimized release profile and emits:
 
 ```text
-out/NoiseHoiHoi-v0.4-setup.exe
-out/NoiseHoiHoi-v0.4-audio-smoke.exe
+out/NoiseHoiHoi-v0.5-setup.exe
+out/NoiseHoiHoi-v0.5-audio-smoke.exe
 ```
 
 The build fetches the official base VB-CABLE Package 45 from VB-Audio, pins it

@@ -292,7 +292,7 @@ checksum = "1254ebf6529f3763c491acfb5ab6e960809e3c75a38584cc664f8c5667fb7107"
 
 [[package]]
 name = "audio-smoke"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4311,8 +4311,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
+name = "noise-bench"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "deep_filter",
+ "hound",
+ "noise-net",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "noise-hoihoi-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "eframe",
  "noise-hoihoi-engine",
@@ -4321,7 +4335,7 @@ dependencies = [
 
 [[package]]
 name = "noise-hoihoi-engine"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cpal",
  "noise-net",
@@ -4332,7 +4346,7 @@ dependencies = [
 
 [[package]]
 name = "noise-net"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "burn",
@@ -4346,7 +4360,7 @@ dependencies = [
 
 [[package]]
 name = "noise-net-runtime"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "burn",
  "burn-wgpu",

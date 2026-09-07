@@ -11,11 +11,18 @@ const HIDDEN_SIZE: usize = 256;
 const ENCODER_CONTEXT: usize = 3;
 const DF_PATH_CONTEXT: usize = 5;
 
+#[derive(Clone, Copy)]
+pub(crate) enum InferenceMode {
+    /// Both decoders advance on every frame, including pauses and quiet speech.
+    Continuous,
+    /// Preserve the pinned upstream runtime for reference comparisons.
+    Reference,
+}
+
 pub(crate) struct NetworkOutput {
     pub(crate) mask: Option<Vec<f32>>,
     pub(crate) coefficients: Option<Vec<f32>>,
     pub(crate) local_snr_db: f32,
-    pub(crate) voice_protected: bool,
 }
 
 pub(crate) struct StreamingNetwork {
@@ -76,7 +83,7 @@ impl StreamingNetwork {
         &mut self,
         erb: [f32; ERB_BANDS],
         complex_features: &[[f32; DF_BINS]; 2],
-        protect_voice: bool,
+        mode: InferenceMode,
     ) -> NetworkOutput {
         self.erb_history.rotate_left(1);
         self.erb_history[ENCODER_CONTEXT - 1] = erb;
@@ -114,8 +121,13 @@ impl StreamingNetwork {
             .try_to_vec::<f32>()
             .expect("encoder local SNR must be f32")[0];
 
-        let voice_protected = protect_voice;
-        let (apply_mask, zero_mask, apply_df) = processing_stages(local_snr_db, protect_voice);
+        // Skipping a decoder also freezes its recurrent state and DF context.
+        // The product keeps those histories continuous and lets the learned
+        // filter estimate attenuation, without a global noise-only mute.
+        let (apply_mask, zero_mask, apply_df) = match mode {
+            InferenceMode::Continuous => (true, false, true),
+            InferenceMode::Reference => processing_stages(local_snr_db),
+        };
         let mask = if apply_mask {
             let (mask, state0, state1) = self.erb_decoder.forward_stream(
                 encoded.embedding.clone(),
@@ -163,15 +175,12 @@ impl StreamingNetwork {
             mask,
             coefficients,
             local_snr_db,
-            voice_protected,
         }
     }
 }
 
-fn processing_stages(local_snr_db: f32, protect_voice: bool) -> (bool, bool, bool) {
-    if protect_voice {
-        (false, false, false)
-    } else if local_snr_db < crate::NOISE_ONLY_THRESHOLD_DB {
+fn processing_stages(local_snr_db: f32) -> (bool, bool, bool) {
+    if local_snr_db < crate::NOISE_ONLY_THRESHOLD_DB {
         (false, true, false)
     } else if local_snr_db > 30.0 {
         (false, false, false)
@@ -203,17 +212,10 @@ mod tests {
 
     #[test]
     fn stage_thresholds_match_the_official_runtime() {
-        assert_eq!(processing_stages(-10.1, false), (false, true, false));
-        assert_eq!(processing_stages(-10.0, false), (true, false, true));
-        assert_eq!(processing_stages(20.0, false), (true, false, true));
-        assert_eq!(processing_stages(20.1, false), (true, false, false));
-        assert_eq!(processing_stages(30.1, false), (false, false, false));
-    }
-
-    #[test]
-    fn voiced_guard_bypasses_model_processing() {
-        assert_eq!(processing_stages(-10.1, true), (false, false, false));
-        assert_eq!(processing_stages(-10.0, true), (false, false, false));
-        assert_eq!(processing_stages(10.0, true), (false, false, false));
+        assert_eq!(processing_stages(-10.1), (false, true, false));
+        assert_eq!(processing_stages(-10.0), (true, false, true));
+        assert_eq!(processing_stages(20.0), (true, false, true));
+        assert_eq!(processing_stages(20.1), (true, false, false));
+        assert_eq!(processing_stages(30.1), (false, false, false));
     }
 }

@@ -5,9 +5,8 @@ use df::{
     compute_band_corr,
 };
 
-use crate::{
-    ATTENUATION_LIMIT_LINEAR, DF_BINS, DF_LOOKAHEAD, DF_ORDER, ERB_BANDS, FFT_BINS, FRAME_SIZE,
-};
+use crate::recovery::SpeechRecovery;
+use crate::{DF_BINS, DF_LOOKAHEAD, DF_ORDER, ERB_BANDS, FFT_BINS, FRAME_SIZE};
 
 const CONV_LOOKAHEAD: usize = 2;
 const NORMALIZATION_ALPHA: f32 = 0.99;
@@ -17,6 +16,10 @@ const NOISY_HISTORY_LENGTH: usize = if DF_ORDER > DF_LOOKAHEAD {
     DF_LOOKAHEAD
 };
 const NOISY_OUTPUT_INDEX: usize = NOISY_HISTORY_LENGTH - DF_LOOKAHEAD - 1;
+// Prominent low/mid bands and coherent harmonics across the full spectrum
+// supplement the model. At 48 kHz / 960 samples, bin 80 is 4 kHz.
+const LOW_VOICE_BINS: usize = 81;
+const VOICE_GAIN_FLOOR: f32 = 0.98;
 
 pub(crate) struct Features {
     pub(crate) erb: [f32; ERB_BANDS],
@@ -31,6 +34,9 @@ pub(crate) struct DspState {
     masked_spectra: VecDeque<Vec<Complex32>>,
     mean_norm_state: [f32; ERB_BANDS],
     unit_norm_state: [f32; DF_BINS],
+    voice_history: [bool; DF_LOOKAHEAD + 1],
+    voice_strength: f32,
+    speech_recovery: SpeechRecovery,
 }
 
 impl DspState {
@@ -48,10 +54,13 @@ impl DspState {
                 .collect(),
             mean_norm_state: linear_state(MEAN_NORM_INIT[0], MEAN_NORM_INIT[1]),
             unit_norm_state: linear_state(UNIT_NORM_INIT[0], UNIT_NORM_INIT[1]),
+            voice_history: [false; DF_LOOKAHEAD + 1],
+            voice_strength: 0.0,
+            speech_recovery: SpeechRecovery::default(),
         }
     }
 
-    pub(crate) fn analyze(&mut self, input: &[f32; FRAME_SIZE]) -> Features {
+    pub(crate) fn analyze(&mut self, input: &[f32; FRAME_SIZE], feature_gain: f32) -> Features {
         self.state.analysis(input, &mut self.current_spectrum);
         advance_spectrum_history(&mut self.noisy_spectra, &self.current_spectrum);
         advance_spectrum_history(&mut self.masked_spectra, &self.current_spectrum);
@@ -64,11 +73,14 @@ impl DspState {
             &self.state.erb,
         );
         for value in &mut erb {
-            *value = (*value + 1.0e-10).log10() * 10.0;
+            *value = (*value * feature_gain * feature_gain + 1.0e-10).log10() * 10.0;
         }
         band_mean_norm_erb(&mut erb, &mut self.mean_norm_state, NORMALIZATION_ALPHA);
         let mut normalized = vec![Complex32::new(0.0, 0.0); DF_BINS];
         normalized.copy_from_slice(&self.current_spectrum[..DF_BINS]);
+        for value in &mut normalized {
+            *value *= feature_gain;
+        }
         band_unit_norm(
             &mut normalized,
             &mut self.unit_norm_state,
@@ -86,8 +98,9 @@ impl DspState {
         &mut self,
         mask: Option<&[f32]>,
         coefficients: Option<&[f32]>,
+        protect_voice: bool,
         output: &mut [f32; FRAME_SIZE],
-    ) {
+    ) -> bool {
         let masked_index = DF_ORDER - 1;
         if let Some(mask) = mask {
             assert_eq!(mask.len(), ERB_BANDS);
@@ -114,12 +127,30 @@ impl DspState {
                 *enhanced_bin = filtered;
             }
         }
-        limit_attenuation(
+        // Align the detector with the spectrum being emitted, then fade its
+        // protection over 20 ms on attack and 50 ms on release. A brief click
+        // may disrupt periodicity without ending the surrounding vowel.
+        self.voice_history.rotate_left(1);
+        self.voice_history[DF_LOOKAHEAD] = protect_voice;
+        self.voice_strength = if self.voice_history[0] {
+            (self.voice_strength + 0.5).min(1.0)
+        } else {
+            (self.voice_strength - 0.2).max(0.0)
+        };
+        let recovering = self.speech_recovery.apply(
             &mut self.enhanced_spectrum,
             &self.noisy_spectra[NOISY_OUTPUT_INDEX],
-            ATTENUATION_LIMIT_LINEAR,
+            self.voice_history[0],
         );
+        if self.voice_strength > 0.0 {
+            protect_voice_bands(
+                &mut self.enhanced_spectrum,
+                &self.noisy_spectra,
+                self.voice_strength,
+            );
+        }
         self.state.synthesis(&mut self.enhanced_spectrum, output);
+        self.voice_strength > 0.0 || recovering
     }
 }
 
@@ -146,11 +177,72 @@ fn apply_mask(spectrum: &mut [Complex32], mask: &[f32], erb_widths: &[usize]) {
     }
 }
 
-fn limit_attenuation(enhanced: &mut [Complex32], noisy: &[Complex32], dry_mix: f32) {
-    debug_assert_eq!(enhanced.len(), noisy.len());
-    debug_assert!((0.0..=1.0).contains(&dry_mix));
-    for (enhanced, noisy) in enhanced.iter_mut().zip(noisy) {
-        *enhanced = *enhanced * (1.0 - dry_mix) + *noisy * dry_mix;
+fn protect_voice_bands(
+    enhanced: &mut [Complex32],
+    noisy_history: &VecDeque<Vec<Complex32>>,
+    strength: f32,
+) {
+    // The existing five spectra surround the output by two frames on each
+    // side. The second-smallest magnitude rejects bursts spanning up to three
+    // frames; a click cannot establish its own protection floor. No extra
+    // lookahead or allocation is needed.
+    let stable: [f32; FFT_BINS] = std::array::from_fn(|bin| {
+        let mut powers: [f32; NOISY_HISTORY_LENGTH] =
+            std::array::from_fn(|frame| noisy_history[frame][bin].norm_sqr());
+        powers.sort_unstable_by(f32::total_cmp);
+        powers[1].sqrt()
+    });
+    let peak = stable[1..LOW_VOICE_BINS]
+        .iter()
+        .copied()
+        .fold(0.0, f32::max);
+    if peak <= 1.0e-10 {
+        return;
+    }
+    let noisy = &noisy_history[NOISY_OUTPUT_INDEX];
+    for bin in 1..FFT_BINS {
+        let magnitude = noisy[bin].norm();
+        if magnitude <= 1.0e-10 {
+            continue;
+        }
+        // Weak harmonics can have stable phase advances even when they are
+        // far below the fundamental. Coherence does not require a large
+        // magnitude relative to that fundamental. The temporal magnitude
+        // statistic still limits restoration of a simultaneous short click.
+        let low_band = if bin < LOW_VOICE_BINS {
+            ((stable[bin] / peak - 0.02) / 0.06).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let coherent = ((spectral_coherence(noisy_history, bin) - 0.8) / 0.18).clamp(0.0, 1.0);
+        let prominence = low_band.max(coherent);
+        let floor = strength * VOICE_GAIN_FLOOR * prominence * (stable[bin] / magnitude).min(1.0);
+        if floor > 0.0 {
+            preserve_response(&mut enhanced[bin], noisy[bin], floor);
+        }
+    }
+}
+
+fn spectral_coherence(history: &VecDeque<Vec<Complex32>>, bin: usize) -> f32 {
+    let mut correlation = Complex32::new(0.0, 0.0);
+    let (mut left_energy, mut right_energy) = (0.0, 0.0);
+    for frame in 1..history.len() {
+        let left = history[frame - 1][bin];
+        let right = history[frame][bin];
+        correlation += right * left.conj();
+        left_energy += left.norm_sqr();
+        right_energy += right.norm_sqr();
+    }
+    correlation.norm() / (left_energy * right_energy).sqrt().max(1.0e-20)
+}
+
+fn preserve_response(enhanced: &mut Complex32, noisy: Complex32, floor: f32) {
+    // Constrain the response along the original phase. A magnitude-only gain
+    // misses phase cancellation when mixing the estimated and original bins.
+    let response = (*enhanced * noisy.conj()).re / noisy.norm_sqr();
+    if response < floor {
+        let mix = (floor - response) / (1.0 - response);
+        *enhanced = *enhanced * (1.0 - mix) + noisy * mix;
     }
 }
 
@@ -162,11 +254,8 @@ impl Default for DspState {
 
 #[cfg(test)]
 mod tests {
-    use super::{DspState, apply_mask, limit_attenuation, linear_state};
-    use crate::{
-        ALGORITHM_LATENCY_SAMPLES, ATTENUATION_LIMIT_DB, ATTENUATION_LIMIT_LINEAR, ERB_BANDS,
-        FFT_BINS, FRAME_SIZE,
-    };
+    use super::{DspState, apply_mask, linear_state, preserve_response};
+    use crate::{ALGORITHM_LATENCY_SAMPLES, ERB_BANDS, FFT_BINS, FRAME_SIZE};
     use df::Complex32;
 
     #[test]
@@ -193,18 +282,76 @@ mod tests {
     }
 
     #[test]
-    fn attenuation_limit_mixes_back_twelve_db_of_the_noisy_spectrum() {
-        let noisy = vec![Complex32::new(0.8, -0.4); FFT_BINS];
-        let mut enhanced = vec![Complex32::new(0.0, 0.0); FFT_BINS];
-
-        limit_attenuation(&mut enhanced, &noisy, ATTENUATION_LIMIT_LINEAR);
-
-        let measured_db = -20.0 * ATTENUATION_LIMIT_LINEAR.log10();
-        assert!((measured_db - ATTENUATION_LIMIT_DB).abs() <= 1.0e-5);
-        for (actual, original) in enhanced.iter().zip(noisy) {
-            assert!((actual.re - original.re * ATTENUATION_LIMIT_LINEAR).abs() <= f32::EPSILON);
-            assert!((actual.im - original.im * ATTENUATION_LIMIT_LINEAR).abs() <= f32::EPSILON);
+    fn suppressed_noise_is_not_mixed_back_into_the_output() {
+        let mut dsp = DspState::new();
+        for _ in 0..16 {
+            let input = std::array::from_fn(|sample| if sample % 2 == 0 { 0.2 } else { -0.2 });
+            dsp.analyze(&input, 1.0);
+            let mut output = [0.0; FRAME_SIZE];
+            let protected = dsp.synthesize(Some(&[0.0; ERB_BANDS]), None, false, &mut output);
+            assert!(!protected);
+            assert!(output.iter().all(|sample| sample.abs() < 1.0e-8));
         }
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn voice_protection_does_not_restore_a_simultaneous_short_burst() {
+        let frames = 30;
+        let voice = (0..frames * FRAME_SIZE)
+            .map(|index| 0.1 * (std::f32::consts::TAU * 250.0 * index as f32 / 48_000.0).sin())
+            .collect::<Vec<_>>();
+        let burst = (0..voice.len())
+            .map(|index| {
+                if (15 * FRAME_SIZE..16 * FRAME_SIZE).contains(&index) {
+                    0.2 * (std::f32::consts::TAU * 2_500.0 * index as f32 / 48_000.0).sin()
+                } else {
+                    0.0
+                }
+            })
+            .collect::<Vec<_>>();
+        let process = |noisy: bool| {
+            let mut dsp = DspState::new();
+            let mut result = Vec::new();
+            for frame in 0..frames {
+                let input = std::array::from_fn(|sample| {
+                    let index = frame * FRAME_SIZE + sample;
+                    voice[index] + if noisy { burst[index] } else { 0.0 }
+                });
+                dsp.analyze(&input, 1.0);
+                let mut output = [0.0; FRAME_SIZE];
+                // A model suppressing everything is the most demanding case
+                // for the voice guard, and used to restore the entire click.
+                dsp.synthesize(Some(&[0.0; ERB_BANDS]), None, true, &mut output);
+                result.extend(output);
+            }
+            result
+        };
+        let clean = process(false);
+        let mixed = process(true);
+        let residual = clean
+            .iter()
+            .zip(&mixed)
+            .map(|(c, m)| (c - m).powi(2))
+            .sum::<f32>();
+        let noise_energy = burst.iter().map(|x| x * x).sum::<f32>();
+        assert!(
+            residual < noise_energy * 0.01,
+            "voice guard restored a click"
+        );
+        let start = 10 * FRAME_SIZE;
+        let output_energy = clean[start + ALGORITHM_LATENCY_SAMPLES..]
+            .iter()
+            .map(|x| x * x)
+            .sum::<f32>();
+        let input_energy = voice[start..voice.len() - ALGORITHM_LATENCY_SAMPLES]
+            .iter()
+            .map(|x| x * x)
+            .sum::<f32>();
+        assert!(
+            output_energy > input_energy * 0.5,
+            "voice was suppressed along with the click"
+        );
     }
 
     #[test]
@@ -219,11 +366,12 @@ mod tests {
             .collect();
         let mut dsp = DspState::new();
         let mut output = Vec::with_capacity(input.len());
-        for frame in input.chunks_exact(FRAME_SIZE) {
+        for (index, frame) in input.chunks_exact(FRAME_SIZE).enumerate() {
             let frame: &[f32; FRAME_SIZE] = frame.try_into().unwrap();
-            let _ = dsp.analyze(frame);
+            // Feature gain changes must not affect waveform gain or delay.
+            let _ = dsp.analyze(frame, if index % 2 == 0 { 1.0 } else { 64.0 });
             let mut synthesized = [0.0; FRAME_SIZE];
-            dsp.synthesize(None, None, &mut synthesized);
+            dsp.synthesize(None, None, false, &mut synthesized);
             output.extend(synthesized);
         }
 
@@ -233,5 +381,43 @@ mod tests {
         {
             assert!((actual - expected).abs() <= 2.0e-5);
         }
+    }
+
+    #[test]
+    fn protected_response_cannot_cancel_against_the_original_phase() {
+        let original = Complex32::new(0.4, -0.3);
+        let mut enhanced = -original * 0.8;
+        preserve_response(&mut enhanced, original, 0.98);
+        assert!((enhanced - original * 0.98).norm() < 1.0e-6);
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn protects_a_weak_harmonic_above_the_former_voice_band_limit() {
+        let mut dsp = DspState::new();
+        let (mut projected, mut expected_energy) = (0.0, 0.0);
+        for frame in 0..40 {
+            let input = std::array::from_fn(|sample| {
+                let t = (frame * FRAME_SIZE + sample) as f32 / 48_000.0;
+                0.1 * (std::f32::consts::TAU * 250.0 * t).sin()
+                    + 0.001 * (std::f32::consts::TAU * 5_250.0 * t).sin()
+            });
+            dsp.analyze(&input, 1.0);
+            let mut output = [0.0; FRAME_SIZE];
+            dsp.synthesize(Some(&[0.0; ERB_BANDS]), None, true, &mut output);
+            if frame >= 10 {
+                for (sample, &actual) in output.iter().enumerate() {
+                    let t =
+                        (frame * FRAME_SIZE + sample - ALGORITHM_LATENCY_SAMPLES) as f32 / 48_000.0;
+                    let expected = 0.001 * (std::f32::consts::TAU * 5_250.0 * t).sin();
+                    projected += f64::from(actual) * f64::from(expected);
+                    expected_energy += f64::from(expected).powi(2);
+                }
+            }
+        }
+        assert!(
+            projected / expected_energy > 0.9,
+            "weak upper harmonic was lost"
+        );
     }
 }
