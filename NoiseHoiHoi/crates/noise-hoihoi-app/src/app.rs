@@ -11,8 +11,8 @@ use std::{
 use eframe::egui::{self, Color32, RichText};
 use noise_hoihoi_engine::{
     AudioDevice, ComputeProcessor, EngineConfig, EngineError, EngineState, MetricsHandle,
-    NoiseReduction, PassThrough, RunningAudioEngine, SignalMonitorSample,
-    VB_CABLE_RECORDING_ENDPOINT_NAME, compute_processors, input_devices, start,
+    NoiseReduction, OUTPUT_MICROPHONE_NAME, PassThrough, RunningAudioEngine, SignalMonitorSample,
+    compute_processors, input_devices, start,
 };
 use serde::{Deserialize, Serialize};
 
@@ -20,9 +20,8 @@ use crate::signal_monitor::{self, SignalMonitorHistory};
 
 const APP_NAME: &str = "NoiseHoiHoi";
 const SETTINGS_KEY: &str = "noise-hoihoi-settings";
-const WINDOW_WIDTH: f32 = 440.0;
-const INITIAL_WINDOW_HEIGHT: f32 = 160.0;
-const PANEL_MARGIN: f32 = 16.0;
+const INITIAL_LAYOUT_WIDTH: f32 = 440.0;
+const PANEL_MARGIN: i8 = 8;
 const SIGNAL_MONITOR_TITLE: &str = "NoiseHoiHoi - Signal Monitor";
 const SIGNAL_MONITOR_WIDTH: f32 = 760.0;
 const SIGNAL_MONITOR_HEIGHT: f32 = 620.0;
@@ -31,10 +30,20 @@ const UI_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
 
 pub fn run() -> eframe::Result {
     let options = eframe::NativeOptions {
+        // On Wayland, waiting for swap on a hidden/occluded monitor viewport
+        // can block the single GUI event loop. Repaints are already timed.
+        // https://docs.rs/glutin/0.32.3/glutin/surface/enum.SwapInterval.html
+        #[cfg(target_os = "linux")]
+        glow_options: egui_glow::GlowConfiguration {
+            vsync: false,
+            ..Default::default()
+        },
         viewport: egui::ViewportBuilder::default()
             .with_app_id("NoiseHoiHoi")
-            .with_inner_size([WINDOW_WIDTH, INITIAL_WINDOW_HEIGHT])
-            .with_resizable(false),
+            .with_icon(app_icon())
+            // Bootstrap the first layout; subsequent sizes come from its contents.
+            .with_inner_size([INITIAL_LAYOUT_WIDTH, 160.0])
+            .with_resizable(true),
         persist_window: false,
         ..Default::default()
     };
@@ -63,7 +72,8 @@ struct NoiseHoiHoiApp {
     engine_start: Option<EngineStart>,
     error: Option<String>,
     notice: Option<String>,
-    window_size: Option<egui::Vec2>,
+    content_size: Option<egui::Vec2>,
+    resize_attempts: u8,
     signal_monitor_open: Arc<AtomicBool>,
     signal_monitor_enabled: bool,
     signal_history: Arc<Mutex<SignalMonitorHistory>>,
@@ -77,6 +87,16 @@ struct EngineStart {
 
 impl NoiseHoiHoiApp {
     fn new(context: &eframe::CreationContext<'_>) -> Self {
+        context.egui_ctx.set_theme(egui::Theme::Light);
+        context.egui_ctx.set_visuals_of(
+            egui::Theme::Light,
+            egui::Visuals {
+                weak_text_color: Some(Color32::from_gray(80)),
+                warn_fg_color: Color32::from_rgb(135, 85, 0),
+                error_fg_color: Color32::from_rgb(180, 35, 45),
+                ..egui::Visuals::light()
+            },
+        );
         let settings = context
             .storage
             .and_then(|storage| eframe::get_value(storage, SETTINGS_KEY))
@@ -89,7 +109,8 @@ impl NoiseHoiHoiApp {
             engine_start: None,
             error: None,
             notice: None,
-            window_size: None,
+            content_size: None,
+            resize_attempts: 0,
             signal_monitor_open: Arc::new(AtomicBool::new(false)),
             signal_monitor_enabled: false,
             signal_history: Arc::new(Mutex::new(SignalMonitorHistory::default())),
@@ -198,10 +219,15 @@ impl NoiseHoiHoiApp {
             None
         };
 
+        // Shutdown can wait for inference or the audio server. Keep it on the
+        // startup thread so changing settings never joins audio from the GUI.
+        let previous_engine = self.engine.take();
+        self.clear_signal_history();
         let (sender, receiver) = mpsc::sync_channel(1);
         match std::thread::Builder::new()
             .name("noise-hoihoi-start".to_owned())
             .spawn(move || {
+                drop(previous_engine);
                 let result = if let Some(processor) = processor {
                     NoiseReduction::new(&processor, processor.default_runtime())
                         .and_then(|processor| start(&config, processor))
@@ -275,7 +301,6 @@ impl NoiseHoiHoiApp {
         let selection_before = self.settings.input_device_id.clone();
         let reduction_before = self.settings.noise_reduction;
         let processor_before = self.settings.processor_id.clone();
-        let mut refresh_requested = false;
         ui.horizontal(|ui| {
             ui.label("Input");
             egui::ComboBox::from_id_salt("input-device")
@@ -295,12 +320,11 @@ impl NoiseHoiHoiApp {
                         );
                     }
                 });
-            refresh_requested = ui.button("Refresh").clicked();
         });
 
         ui.horizontal(|ui| {
             ui.label("Output");
-            ui.label(VB_CABLE_RECORDING_ENDPOINT_NAME);
+            ui.label(OUTPUT_MICROPHONE_NAME);
         });
         ui.horizontal(|ui| {
             ui.label("Noise reduction");
@@ -345,21 +369,13 @@ impl NoiseHoiHoiApp {
             }
         }
 
-        if refresh_requested {
-            self.stop();
-            self.refresh_devices();
-            self.refresh_processors();
-            if self.settings.input_device_id.is_some() {
-                self.start();
-            }
-        } else if selection_before != self.settings.input_device_id
+        if selection_before != self.settings.input_device_id
             || reduction_before != self.settings.noise_reduction
             || processor_before != self.settings.processor_id
         {
             if processor_before != self.settings.processor_id {
                 self.notice = None;
             }
-            self.stop();
             self.start();
         }
     }
@@ -372,10 +388,12 @@ impl NoiseHoiHoiApp {
             self.engine_start.is_some(),
             metrics.map(|value| value.state),
         ) {
-            (true, _) | (false, Some(EngineState::Starting)) => ("Starting", Color32::YELLOW),
-            (false, Some(EngineState::Running)) => ("Running", Color32::LIGHT_GREEN),
-            (false, Some(EngineState::Faulted)) => ("Audio error", Color32::LIGHT_RED),
-            _ => ("Stopped", Color32::GRAY),
+            (true, _) | (false, Some(EngineState::Starting)) => {
+                ("Starting", ui.visuals().warn_fg_color)
+            }
+            (false, Some(EngineState::Running)) => ("Running", Color32::from_rgb(25, 110, 65)),
+            (false, Some(EngineState::Faulted)) => ("Audio error", ui.visuals().error_fg_color),
+            _ => ("Stopped", ui.visuals().weak_text_color()),
         };
         let can_retry = self.engine_start.is_none()
             && (self.engine.is_none()
@@ -391,7 +409,6 @@ impl NoiseHoiHoiApp {
                     )
                     .clicked()
             {
-                self.stop();
                 self.start();
             }
         });
@@ -412,10 +429,10 @@ impl NoiseHoiHoiApp {
         });
         if let Some(error) = self.error.as_ref().or(runtime_error.as_ref()) {
             ui.add_space(8.0);
-            ui.colored_label(Color32::LIGHT_RED, error);
+            ui.colored_label(ui.visuals().error_fg_color, error);
         } else if let Some(notice) = &self.notice {
             ui.add_space(8.0);
-            ui.colored_label(Color32::YELLOW, notice);
+            ui.colored_label(ui.visuals().warn_fg_color, notice);
         }
     }
 
@@ -432,6 +449,59 @@ impl NoiseHoiHoiApp {
             } else {
                 self.set_signal_monitor_open(true);
             }
+        }
+    }
+
+    fn draw_panel(&mut self, ui: &mut egui::Ui) -> egui::Vec2 {
+        let panel = egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(ui.style()).inner_margin(PANEL_MARGIN))
+            .show(ui, |ui| {
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // Separators stretch to the viewport, so measure the widgets separately.
+                        let controls = ui.vertical(|ui| self.draw_controls(ui));
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                        let status = ui.vertical(|ui| self.draw_status(ui));
+                        self.draw_signal_monitor_button(ui);
+                        controls
+                            .response
+                            .rect
+                            .width()
+                            .max(status.response.rect.width())
+                    })
+            });
+        egui::vec2(panel.inner.inner, panel.inner.content_size.y)
+            + egui::Vec2::splat(2.0 * f32::from(PANEL_MARGIN))
+    }
+
+    fn resize_to_content(&mut self, context: &egui::Context, content_size: egui::Vec2) {
+        let (actual_size, monitor_size, maximized) = context.input(|input| {
+            let viewport = input.viewport();
+            (
+                input.content_rect().size(),
+                viewport.monitor_size,
+                viewport.maximized == Some(true) || viewport.fullscreen == Some(true),
+            )
+        });
+        // Leave room for window decorations and the desktop panel on small displays.
+        let limit = monitor_size.map_or(egui::Vec2::INFINITY, |size| {
+            (size - egui::Vec2::splat(64.0)).max(egui::Vec2::splat(1.0))
+        });
+        let desired_size = content_size.ceil().min(limit);
+        if self.content_size != Some(desired_size) {
+            self.content_size = Some(desired_size);
+            self.resize_attempts = 3;
+        }
+        if maximized || (actual_size - desired_size).abs().max_elem() < 1.0 {
+            self.resize_attempts = 0;
+        } else if self.resize_attempts > 0 {
+            // Verify the actual viewport on later frames; a resize request is asynchronous.
+            context.send_viewport_cmd(egui::ViewportCommand::InnerSize(desired_size));
+            self.resize_attempts -= 1;
+            context.request_repaint_after(UI_REFRESH_INTERVAL);
         }
     }
 
@@ -488,11 +558,11 @@ impl NoiseHoiHoiApp {
         let open = Arc::clone(&self.signal_monitor_open);
         let history = Arc::clone(&self.signal_history);
         let metrics = self.engine.as_ref().map(RunningAudioEngine::metrics);
-        let monitor_is_running = metrics.is_some();
         context.show_viewport_deferred(
             signal_monitor_viewport_id(),
             egui::ViewportBuilder::default()
                 .with_title(SIGNAL_MONITOR_TITLE)
+                .with_icon(app_icon())
                 .with_inner_size([SIGNAL_MONITOR_WIDTH, SIGNAL_MONITOR_HEIGHT])
                 .with_min_inner_size([560.0, 420.0])
                 .with_resizable(true),
@@ -514,9 +584,10 @@ impl NoiseHoiHoiApp {
                         signal_monitor::draw(ui, &history, metrics.as_ref());
                     });
                 });
-                if monitor_is_running {
-                    ui.ctx().request_repaint_after(UI_REFRESH_INTERVAL);
-                }
+                // During a restart this callback can temporarily have no engine.
+                // Keep repainting so the viewport adopts the next callback with
+                // fresh metrics after startup completes, even without mouse input.
+                ui.ctx().request_repaint_after(UI_REFRESH_INTERVAL);
             },
         );
     }
@@ -534,24 +605,8 @@ impl eframe::App for NoiseHoiHoiApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let context = ui.ctx().clone();
-        let panel = egui::CentralPanel::default().show(ui, |ui| {
-            ui.vertical(|ui| {
-                self.draw_controls(ui);
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-                self.draw_status(ui);
-                self.draw_signal_monitor_button(ui);
-            })
-        });
-
-        let content_height = panel.inner.response.rect.height();
-        let desired_size = egui::vec2(WINDOW_WIDTH, (content_height + PANEL_MARGIN).ceil());
-        if self.window_size != Some(desired_size) {
-            ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::InnerSize(desired_size));
-            self.window_size = Some(desired_size);
-        }
+        let content_size = self.draw_panel(ui);
+        self.resize_to_content(&context, content_size);
 
         self.show_signal_monitor(&context);
     }
@@ -567,6 +622,75 @@ impl eframe::App for NoiseHoiHoiApp {
     }
 }
 
+fn app_icon() -> Arc<egui::IconData> {
+    static ICON: std::sync::OnceLock<Arc<egui::IconData>> = std::sync::OnceLock::new();
+    Arc::clone(ICON.get_or_init(|| {
+        Arc::new(
+            eframe::icon_data::from_png_bytes(include_bytes!("../../../../assets/NoiseHoiHoi.png"))
+                .expect("the bundled NoiseHoiHoi icon must be a valid PNG"),
+        )
+    }))
+}
+
 fn signal_monitor_viewport_id() -> egui::ViewportId {
     egui::ViewportId::from_hash_of(SIGNAL_MONITOR_VIEWPORT_ID)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_without_audio() -> NoiseHoiHoiApp {
+        NoiseHoiHoiApp {
+            settings: Settings::default(),
+            devices: Vec::new(),
+            processors: Vec::new(),
+            engine: None,
+            engine_start: None,
+            error: None,
+            notice: None,
+            content_size: None,
+            resize_attempts: 0,
+            signal_monitor_open: Arc::new(AtomicBool::new(false)),
+            signal_monitor_enabled: false,
+            signal_history: Arc::new(Mutex::new(SignalMonitorHistory::default())),
+            pending_signal_samples: Vec::new(),
+        }
+    }
+
+    fn measure(app: &mut NoiseHoiHoiApp, viewport_size: egui::Vec2) -> egui::Vec2 {
+        let context = egui::Context::default();
+        let mut content_size = egui::Vec2::ZERO;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport_size)),
+                ..Default::default()
+            },
+            |ui| content_size = app.draw_panel(ui),
+        );
+        output.textures_delta.clear();
+        content_size.ceil()
+    }
+
+    #[test]
+    fn content_size_does_not_include_unused_viewport_space() {
+        let mut app = app_without_audio();
+        let compact = measure(&mut app, egui::vec2(INITIAL_LAYOUT_WIDTH, 160.0));
+        let expanded = measure(&mut app, egui::vec2(1000.0, 800.0));
+        assert_eq!(compact, expanded);
+        assert!(compact.x < INITIAL_LAYOUT_WIDTH);
+        assert!(compact.y > 160.0);
+    }
+
+    #[test]
+    fn content_height_grows_and_shrinks_with_processor_controls() {
+        let mut app = app_without_audio();
+        let viewport = egui::vec2(INITIAL_LAYOUT_WIDTH, 600.0);
+        let pass_through = measure(&mut app, viewport);
+        app.settings.noise_reduction = true;
+        let reduction = measure(&mut app, viewport);
+        assert!(reduction.y > pass_through.y);
+        app.settings.noise_reduction = false;
+        assert_eq!(measure(&mut app, viewport), pass_through);
+    }
 }

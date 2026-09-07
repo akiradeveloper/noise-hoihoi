@@ -208,6 +208,7 @@ fn publish(
     Ok(())
 }
 
+#[cfg(windows)]
 pub(super) fn stop_worker(stop: &AtomicBool, worker: JoinHandle<()>) {
     stop.store(true, Ordering::Release);
     worker.thread().unpark();

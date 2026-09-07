@@ -8,6 +8,14 @@ default:
 build-windows:
     bash ./scripts/docker/build-windows.sh
 
+# Build the Linux x86_64 AppImage (PipeWire/PulseAudio).
+build-linux:
+    bash ./scripts/docker/build-linux.sh
+
+# Test virtual audio routing against an isolated PulseAudio or PipeWire server in Docker.
+test-linux-audio server="pulseaudio":
+    docker run --rm --volume "$PWD:/work" --volume noise-hoihoi-cargo-cache:/root/.cargo-cache --env CARGO_HOME=/root/.cargo-cache --env CARGO_TARGET_DIR=/work/target/linux --env CARGO_BUILD_JOBS=6 noise-hoihoi-linux-dev:local bash /work/scripts/docker/test-linux-audio.sh {{server}}
+
 # Run formatting, lint, unit, and documentation checks.
 check:
     cargo fmt --all --check

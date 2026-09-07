@@ -9,10 +9,21 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[target.'cfg(windows)'.dependencies]
+[build-dependencies]
+winresource = "0.1.31"
+
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 eframe.workspace = true
 noise-hoihoi-engine = { path = "../noise-hoihoi-engine" }
 serde.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Enable the Glow window backends directly; eframe 0.36.1's forwarding
+# features also resolve its unused optional egui-wgpu dependency.
+egui-winit = { version = "0.36.1", default-features = false, features = ["wayland", "x11"] }
+egui_glow = { version = "0.36.1", default-features = false, features = ["wayland", "x11"] }
+glutin = { version = "0.32.3", default-features = false, features = ["wayland", "x11", "glx"] }
+glutin-winit = { version = "0.5.0", default-features = false, features = ["wayland", "x11", "glx"] }

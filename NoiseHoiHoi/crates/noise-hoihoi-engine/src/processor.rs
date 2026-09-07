@@ -1,4 +1,4 @@
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", target_os = "linux", test))]
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -71,7 +71,7 @@ impl AudioProcessor for NoiseReduction {
 
 /// Adapts variable resampler chunks to a processor's fixed frame size and
 /// delay-aligns the corresponding monitor input.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", target_os = "linux", test))]
 pub(crate) struct ProcessorPipeline<P> {
     processor: P,
     frame_size: Option<usize>,
@@ -81,7 +81,7 @@ pub(crate) struct ProcessorPipeline<P> {
     input_delay: VecDeque<f32>,
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", target_os = "linux", test))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ProcessReport {
     pub(crate) processed_samples: usize,
@@ -89,7 +89,7 @@ pub(crate) struct ProcessReport {
     pub(crate) deadline_misses: u64,
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", target_os = "linux", test))]
 impl ProcessReport {
     fn observe(&mut self, sample_count: usize, elapsed: Duration) {
         self.processed_samples += sample_count;
@@ -104,7 +104,7 @@ impl ProcessReport {
     }
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", target_os = "linux", test))]
 impl<P: AudioProcessor> ProcessorPipeline<P> {
     pub(crate) fn new(processor: P) -> Result<Self, &'static str> {
         let frame_size = processor.frame_size();
@@ -161,7 +161,7 @@ impl<P: AudioProcessor> ProcessorPipeline<P> {
     }
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", target_os = "linux", test))]
 fn align_input(delay: &mut VecDeque<f32>, input: &[f32], aligned: &mut Vec<f32>) {
     aligned.clear();
     aligned.reserve(input.len());

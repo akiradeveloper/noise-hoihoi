@@ -1,4 +1,4 @@
-//! Real-time microphone capture and VB-CABLE output for `NoiseHoiHoi`.
+//! Real-time microphone capture and virtual microphone output for `NoiseHoiHoi`.
 
 mod config;
 mod metrics;
@@ -29,7 +29,7 @@ pub fn compute_processors() -> Vec<ComputeProcessor> {
 /// Errors surfaced by the audio engine to the UI.
 #[derive(Debug, Error)]
 pub enum EngineError {
-    #[error("NoiseHoiHoi currently supports Windows 11 x64")]
+    #[error("NoiseHoiHoi currently supports Windows 11 x64 and Linux x86_64")]
     UnsupportedPlatform,
 
     #[error("failed to enumerate audio devices: {0}")]
@@ -55,3 +55,9 @@ pub enum EngineError {
     #[error("invalid engine configuration: {0}")]
     InvalidConfiguration(String),
 }
+
+/// Microphone name to select in streaming and recording applications.
+#[cfg(target_os = "linux")]
+pub const OUTPUT_MICROPHONE_NAME: &str = "NoiseHoiHoi Microphone";
+#[cfg(not(target_os = "linux"))]
+pub const OUTPUT_MICROPHONE_NAME: &str = VB_CABLE_RECORDING_ENDPOINT_NAME;

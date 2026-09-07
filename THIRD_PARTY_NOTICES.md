@@ -17,16 +17,16 @@ The selected license is installed as
 NoiseNet's source test data includes a resampled excerpt of Ian Skillen's
 public-domain LibriVox reading, obtained from Voice Zero. Voice Zero dedicates
 files in its `voices` directory to the public domain under CC0 1.0. This test
-fixture is not installed with the Windows application. Its exact provenance
+fixture is not installed with the application. Its exact provenance
 and hashes are recorded in `NoiseNet/crates/noise-net/testdata/README.md`.
 
 Origin: https://github.com/OwenTyme/voice-zero
 
 ## Rust dependencies
 
-The Windows application includes open-source Rust dependencies. The exact
+The application includes open-source Rust dependencies. The exact
 crate versions and declared license expressions are generated from the locked
-Windows dependency graph into `licenses/RUST-DEPENDENCIES.txt`. Each crate's
+target-platform dependency graph into `licenses/RUST-DEPENDENCIES.txt`. Each crate's
 distributed license, copyright, copying, and notice files are installed below
 `licenses/rust/<crate>-<version>/`.
 
@@ -58,3 +58,13 @@ https://vb-audio.com/Services/licensing.htm
 The Windows Docker image uses Nullsoft Scriptable Install System (NSIS) to
 assemble the Windows installer. The generated package includes the NSIS
 copyright and license notice under `licenses/NSIS-copyright`.
+
+## Linux shared libraries
+
+The Linux AppImage includes the PulseAudio client library and window-system
+libraries collected by linuxdeploy. Complete Debian copyright notices and
+package/source versions are installed under `licenses/system/`. Source retrieval
+and library replacement instructions are in the bundled Linux README.
+
+Packaging tools: https://github.com/linuxdeploy/linuxdeploy and
+https://github.com/AppImage/appimagetool (checksum-pinned by the build script).

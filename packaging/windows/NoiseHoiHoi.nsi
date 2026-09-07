@@ -28,6 +28,8 @@ Unicode True
 
 Name "${PRODUCT_NAME} ${RELEASE_LABEL}"
 OutFile "${OUTPUT_FILE}"
+Icon "../../assets/NoiseHoiHoi.ico"
+UninstallIcon "../../assets/NoiseHoiHoi.ico"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 RequestExecutionLevel admin
 CRCCheck force

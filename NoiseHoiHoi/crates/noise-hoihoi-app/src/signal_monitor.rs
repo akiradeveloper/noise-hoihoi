@@ -10,7 +10,7 @@ const PLOT_HEIGHT: f32 = 112.0;
 const MIN_MAIN_SCALE: f32 = 0.01;
 const MIN_DIFFERENCE_SCALE: f32 = 0.001;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct SignalMonitorHistory {
     samples: VecDeque<SignalMonitorSample>,
 }
@@ -103,9 +103,12 @@ pub(super) fn draw(
 ) {
     let metrics = metrics_handle.map_or_else(EngineMetrics::default, MetricsHandle::snapshot);
     let error = metrics_handle.and_then(MetricsHandle::last_error);
+    // Release the history lock before invoking egui. A viewport repaint must
+    // never hold it while the root viewport updates or clears the history.
     let history = history
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     let stats = history.stats();
     let main_scale = (stats.input.peak.max(stats.output.peak) * 1.1).max(MIN_MAIN_SCALE);
     let difference_scale = (stats.difference.peak * 1.1).max(MIN_DIFFERENCE_SCALE);
@@ -113,7 +116,7 @@ pub(super) fn draw(
     ui.heading("Signal Monitor");
     ui.horizontal(|ui| {
         ui.label("State");
-        let (state_text, color) = state_label(metrics.state);
+        let (state_text, color) = state_label(metrics.state, ui.visuals());
         ui.label(RichText::new(state_text).color(color).strong());
         ui.separator();
         ui.weak("Processor-aligned 48 kHz mono · latest 1 second");
@@ -127,7 +130,7 @@ pub(super) fn draw(
         SignalKind::Input,
         stats.input,
         main_scale,
-        Color32::LIGHT_GREEN,
+        Color32::from_rgb(25, 110, 65),
     );
     draw_plot(
         ui,
@@ -136,7 +139,7 @@ pub(super) fn draw(
         SignalKind::Output,
         stats.output,
         main_scale,
-        Color32::LIGHT_BLUE,
+        Color32::from_rgb(30, 95, 180),
     );
     draw_plot(
         ui,
@@ -145,7 +148,7 @@ pub(super) fn draw(
         SignalKind::Difference,
         stats.difference,
         difference_scale,
-        Color32::LIGHT_RED,
+        Color32::from_rgb(180, 35, 45),
     );
 
     ui.add_space(8.0);
@@ -155,7 +158,7 @@ pub(super) fn draw(
 
     if let Some(error) = error {
         ui.add_space(6.0);
-        ui.colored_label(Color32::LIGHT_RED, error);
+        ui.colored_label(ui.visuals().error_fg_color, error);
     }
     ui.add_space(6.0);
     ui.weak("Input is aligned to the processor delay before calculating Difference.");
@@ -195,7 +198,7 @@ fn draw_plot(
     painter.hline(
         rect.x_range(),
         rect.center().y,
-        Stroke::new(1.0, ui.visuals().faint_bg_color),
+        Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
     );
 
     if history.samples.is_empty() {
@@ -356,12 +359,12 @@ fn dbfs_text(amplitude: f32) -> String {
     }
 }
 
-fn state_label(state: EngineState) -> (&'static str, Color32) {
+fn state_label(state: EngineState, visuals: &egui::Visuals) -> (&'static str, Color32) {
     match state {
-        EngineState::Starting => ("Starting", Color32::YELLOW),
-        EngineState::Running => ("Running", Color32::LIGHT_GREEN),
-        EngineState::Faulted => ("Audio error", Color32::LIGHT_RED),
-        EngineState::Stopped => ("Stopped", Color32::GRAY),
+        EngineState::Starting => ("Starting", visuals.warn_fg_color),
+        EngineState::Running => ("Running", Color32::from_rgb(25, 110, 65)),
+        EngineState::Faulted => ("Audio error", visuals.error_fg_color),
+        EngineState::Stopped => ("Stopped", visuals.weak_text_color()),
     }
 }
 

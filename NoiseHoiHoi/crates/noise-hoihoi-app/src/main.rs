@@ -1,16 +1,16 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
+mod app;
+#[cfg(any(windows, target_os = "linux"))]
 mod signal_monitor;
-#[cfg(windows)]
-mod windows_app;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn main() -> eframe::Result {
-    windows_app::run()
+    app::run()
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn main() {
-    eprintln!("NoiseHoiHoi currently supports Windows 11 x64");
+    eprintln!("NoiseHoiHoi currently supports Windows 11 x64 and Linux x86_64");
 }

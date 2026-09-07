@@ -1,5 +1,9 @@
 # NoiseHoiHoi
 
+<img src="assets/NoiseHoiHoi.svg" alt="NoiseHoiHoi microphone icon" width="128" height="128">
+
+## What is this?
+
 NoiseHoiHoi is a desktop noise-reduction application designed primarily for streamers.
 
 It reduces microphone noise from keyboards, mice, game controllers, air conditioners,

@@ -4,7 +4,7 @@ mod windows;
 #[cfg(windows)]
 pub use windows::{RunningAudioEngine, input_devices, start};
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 mod unsupported {
     use crate::{
         AudioDevice, AudioProcessor, EngineConfig, EngineError, MetricsHandle, SignalMonitorSample,
@@ -17,7 +17,7 @@ mod unsupported {
     impl RunningAudioEngine {
         #[must_use]
         pub fn metrics(&self) -> MetricsHandle {
-            unreachable!("a running engine cannot exist off Windows")
+            unreachable!("a running engine cannot exist on an unsupported platform")
         }
 
         pub fn set_signal_monitor_enabled(&mut self, _enabled: bool) {}
@@ -33,14 +33,14 @@ mod unsupported {
 
     /// # Errors
     ///
-    /// Always returns [`EngineError::UnsupportedPlatform`] outside Windows.
+    /// Always returns [`EngineError::UnsupportedPlatform`] outside Windows and Linux.
     pub fn input_devices() -> Result<Vec<AudioDevice>, EngineError> {
         Err(EngineError::UnsupportedPlatform)
     }
 
     /// # Errors
     ///
-    /// Always returns [`EngineError::UnsupportedPlatform`] outside Windows.
+    /// Always returns [`EngineError::UnsupportedPlatform`] outside Windows and Linux.
     pub fn start<P: AudioProcessor>(
         _config: &EngineConfig,
         _processor: P,
@@ -49,5 +49,13 @@ mod unsupported {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub use unsupported::{RunningAudioEngine, input_devices, start};
+
+#[cfg(any(windows, target_os = "linux"))]
+mod worker;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::{RunningAudioEngine, input_devices, start};

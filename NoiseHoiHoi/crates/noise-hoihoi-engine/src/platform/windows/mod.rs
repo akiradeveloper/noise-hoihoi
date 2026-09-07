@@ -1,6 +1,6 @@
 mod devices;
 mod streams;
-mod worker;
+use super::worker;
 
 use std::sync::{
     Arc,
@@ -65,8 +65,12 @@ impl RunningAudioEngine {
         &mut self,
         destination: &mut Vec<crate::SignalMonitorSample>,
     ) {
-        while let Ok(sample) = self.signal_monitor_consumer.pop() {
-            destination.push(sample);
+        // Bound GUI work even if the producer continues writing concurrently.
+        let available = self.signal_monitor_consumer.slots();
+        for _ in 0..available {
+            if let Ok(sample) = self.signal_monitor_consumer.pop() {
+                destination.push(sample);
+            }
         }
     }
 

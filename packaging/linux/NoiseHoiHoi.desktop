@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=NoiseHoiHoi
+Comment=Real-time microphone noise reduction
+Exec=noise-hoihoi-app
+Icon=NoiseHoiHoi
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupWMClass=NoiseHoiHoi

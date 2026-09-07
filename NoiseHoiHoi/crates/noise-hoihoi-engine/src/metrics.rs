@@ -36,7 +36,7 @@ pub struct EngineMetrics {
     pub inserted_silence_frames: u64,
     /// Recoverable discontinuities reported by the physical input stream.
     pub input_discontinuities: u64,
-    /// Recoverable discontinuities reported by the VB-CABLE output stream.
+    /// Recoverable discontinuities reported by the virtual microphone output stream.
     pub output_discontinuities: u64,
     pub stream_faults: u64,
     pub processed_frames: u64,
@@ -87,40 +87,40 @@ impl Default for SharedMetrics {
 }
 
 impl SharedMetrics {
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn set_state(&self, state: EngineState) {
         self.state.store(state as u8, Ordering::Release);
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn set_input_peak(&self, peak: f32) {
         self.input_peak_bits
             .store(peak.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn add_dropped_input_frames(&self, count: u64) {
         self.dropped_input_frames
             .fetch_add(count, Ordering::Relaxed);
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn add_inserted_silence_frames(&self, count: u64) {
         self.inserted_silence_frames
             .fetch_add(count, Ordering::Relaxed);
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn add_input_discontinuity(&self) {
         self.input_discontinuities.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn add_output_discontinuity(&self) {
         self.output_discontinuities.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn mark_stream_fault(&self, message: impl Into<String>) {
         let mut fault_message = self
             .fault_message
@@ -133,12 +133,12 @@ impl SharedMetrics {
         self.set_state(EngineState::Faulted);
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn add_processed_frames(&self, count: u64) {
         self.processed_frames.fetch_add(count, Ordering::Relaxed);
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn observe_processing(&self, elapsed: std::time::Duration, deadline_misses: u64) {
         let microseconds = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
         self.max_processing_time_us
@@ -147,13 +147,13 @@ impl SharedMetrics {
             .fetch_add(deadline_misses, Ordering::Relaxed);
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn set_buffered_output_frames(&self, count: usize) {
         self.buffered_output_frames
             .store(u32::try_from(count).unwrap_or(u32::MAX), Ordering::Relaxed);
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn add_dropped_signal_monitor_frames(&self, count: u64) {
         self.dropped_signal_monitor_frames
             .fetch_add(count, Ordering::Relaxed);
