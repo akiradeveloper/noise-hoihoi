@@ -1,4 +1,4 @@
-# Linux AppImage (v0.6)
+# Linux AppImage (v0.7)
 
 NoiseHoiHoi supports Linux x86_64 desktop sessions using PipeWire with
 `pipewire-pulse`, or PulseAudio. The GUI supports Wayland and X11. The AppImage
@@ -8,8 +8,8 @@ compatible desktop distribution. ALSA-only sessions are not supported.
 ## Use
 
 ```sh
-chmod +x NoiseHoiHoi-v0.6-x86_64.AppImage
-./NoiseHoiHoi-v0.6-x86_64.AppImage
+chmod +x NoiseHoiHoi-v0.7-x86_64.AppImage
+./NoiseHoiHoi-v0.7-x86_64.AppImage
 ```
 
 Choose your microphone under **Input**. **Output** shows **NoiseHoiHoi
@@ -17,7 +17,8 @@ Microphone**; select that same microphone in OBS, Discord, or your recording
 application after NoiseHoiHoi reports **Running**. Keep NoiseHoiHoi open while
 using it. Noise reduction, CPU/GPU selection, pass-through, and the signal
 monitor work as on Windows. GPU inference uses WGPU/Vulkan and requires the
-host's Vulkan driver. The GUI needs a working host OpenGL/EGL driver.
+host's Vulkan driver. The GPUI GUI also needs a working Vulkan or OpenGL renderer,
+even when CPU inference or pass-through is selected.
 
 The AppImage includes the PulseAudio client library. It uses the existing
 user-session audio server, with no VB-CABLE, root access, `pactl`, or manual
@@ -27,7 +28,7 @@ virtual-device setup required for normal use. The server must allow
 For systems where FUSE is unavailable, use:
 
 ```sh
-./NoiseHoiHoi-v0.6-x86_64.AppImage --appimage-extract-and-run
+./NoiseHoiHoi-v0.7-x86_64.AppImage --appimage-extract-and-run
 ```
 
 ## Audio route and lifecycle
@@ -93,8 +94,8 @@ sound server. After building the Docker image, run it separately with
 
 Outputs:
 
-- `out/NoiseHoiHoi-v0.6-x86_64.AppImage`
-- `out/NoiseHoiHoi-v0.6-x86_64.AppImage.sha256`
+- `out/NoiseHoiHoi-v0.7-x86_64.AppImage`
+- `out/NoiseHoiHoi-v0.7-x86_64.AppImage.sha256`
 - `out/linux/NoiseHoiHoi.AppDir/` (unpacked application)
 
 Rust dependencies are locked; the Docker base and packaging tools are pinned

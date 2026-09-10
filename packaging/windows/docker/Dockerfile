@@ -3,6 +3,11 @@ FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92e
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
+        clang \
+        cmake \
+        wine64 \
+        xvfb \
+        xauth \
         curl \
         file \
         g++-mingw-w64-x86-64-posix \

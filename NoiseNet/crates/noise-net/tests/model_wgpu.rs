@@ -1,3 +1,5 @@
+use noise_net_runtime::ComputeProcessor;
+use noise_net_runtime::{create_device, processors};
 mod common;
 
 use std::io::Cursor;
@@ -6,7 +8,7 @@ use common::{
     REFERENCE_FRAMES, assert_sustained_vowel_is_protected, expected_reference, process_reference,
     reference_error,
 };
-use noise_net::{ComputeProcessor, FRAME_SIZE, NoiseNet, SAMPLE_RATE, processors};
+use noise_net::{FRAME_SIZE, NoiseNet, SAMPLE_RATE};
 
 fn quiet_recorded_input() -> Vec<f32> {
     let reader = hound::WavReader::new(Cursor::new(include_bytes!(
@@ -49,8 +51,11 @@ fn every_wgpu_processor_matches_the_official_reference() {
     let expected_product = process_product(&mut NoiseNet::new_cpu().unwrap(), &quiet_input);
 
     for processor in processors {
-        let mut net = NoiseNet::new(&processor, processor.default_runtime())
-            .unwrap_or_else(|error| panic!("{} failed to initialize: {error}", processor.name()));
+        let mut net = NoiseNet::from_device(
+            create_device(&processor, processor.default_runtime()).unwrap(),
+            true,
+        )
+        .unwrap_or_else(|error| panic!("{} failed to initialize: {error}", processor.name()));
         let actual = process_reference(&mut net, REFERENCE_FRAMES);
         let (rmse, max_error) = reference_error(&actual, &expected);
         assert!(

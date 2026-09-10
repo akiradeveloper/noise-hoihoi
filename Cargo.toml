@@ -4,13 +4,17 @@ members = [
     "NoiseNet/crates/noise-net-runtime",
     "NoiseHoiHoi/crates/noise-hoihoi-app",
     "NoiseHoiHoi/crates/noise-hoihoi-engine",
+    "NoiseHoiHoi/crates/noise-hoihoi-platform",
+    "NoiseHoiHoi/crates/noise-hoihoi-session",
     "tools/audio-smoke",
     "tools/noise-bench",
+    "tools/noise-net-cli",
 ]
+exclude = ["vendor/gpui-pre-windows"]
 resolver = "3"
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Akira Hayakawa"]
@@ -25,7 +29,7 @@ burn-store = { version = "=0.22.0-pre.3", default-features = false, features = [
 clap = { version = "4.5.47", features = ["derive"] }
 cpal = "0.18.2"
 df = { package = "deep_filter", version = "=0.2.5", default-features = false }
-eframe = { version = "0.36.1", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+gpui-kit = "=0.6.1"
 hound = "3.5.1"
 pollster = "0.4.0"
 rtrb = "0.4.0"
@@ -48,3 +52,7 @@ pedantic = "warn"
 codegen-units = 1
 lto = "thin"
 strip = "symbols"
+
+# GPUI Windows shader compilation on a Linux host; see vendor README.
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

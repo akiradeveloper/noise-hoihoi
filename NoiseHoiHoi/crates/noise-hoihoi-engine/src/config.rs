@@ -1,4 +1,3 @@
-#[cfg(any(windows, target_os = "linux", test))]
 use crate::EngineError;
 
 /// Canonical format passed to the processor in every `NoiseHoiHoi` release.
@@ -28,8 +27,11 @@ impl EngineConfig {
         }
     }
 
-    #[cfg(any(windows, target_os = "linux", test))]
-    pub(crate) fn validate(&self) -> Result<(), EngineError> {
+    /// Check the device selection and buffering bounds.
+    ///
+    /// # Errors
+    /// Returns an error for an empty input identifier or latency outside 10–250 ms.
+    pub fn validate(&self) -> Result<(), EngineError> {
         if self.input_device_id.trim().is_empty() {
             return Err(EngineError::InvalidConfiguration(
                 "an input device must be selected".to_owned(),
@@ -44,14 +46,12 @@ impl EngineConfig {
     }
 }
 
-#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn latency_frames(sample_rate: u32, latency_ms: u32) -> Result<usize, EngineError> {
     usize::try_from(u64::from(sample_rate) * u64::from(latency_ms) / 1_000).map_err(|_| {
         EngineError::InvalidConfiguration("latency does not fit this target".to_owned())
     })
 }
 
-#[cfg(any(windows, test))]
 pub(crate) fn scale_frames_to_rate(
     output_frames: usize,
     input_rate: u32,

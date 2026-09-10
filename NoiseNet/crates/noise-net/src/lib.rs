@@ -15,7 +15,7 @@ use network::{InferenceMode, StreamingNetwork};
 use thiserror::Error;
 use voicing::VoicedGuard;
 
-pub use noise_net_runtime::{ComputeProcessor, ComputeRuntime, ProcessorKind, processors};
+use burn::prelude::Device;
 
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const FRAME_SIZE: usize = 480;
@@ -53,23 +53,18 @@ impl NoiseNet {
     /// Returns [`NoiseNetError::Initialization`] if the CPU runtime or embedded
     /// model cannot be initialized.
     pub fn new_cpu() -> Result<Self, NoiseNetError> {
-        let processor = noise_net_runtime::cpu();
-        Self::new(&processor, ComputeRuntime::Flex)
+        Self::from_device(Device::flex(), false)
     }
 
-    /// Load the official `DeepFilterNet3` weights on the selected processor.
+    /// Load the embedded model on an already initialized Burn device.
+    ///
+    /// Device discovery and graphics API selection belong to the caller. When
+    /// `warm_up` is true, exercise inference before returning, then reset all state.
     ///
     /// # Errors
-    ///
-    /// Returns [`NoiseNetError::Initialization`] if the runtime, processor, or
-    /// embedded model cannot be initialized.
-    pub fn new(
-        processor: &ComputeProcessor,
-        runtime: ComputeRuntime,
-    ) -> Result<Self, NoiseNetError> {
-        match catch_unwind(AssertUnwindSafe(|| {
-            let device = noise_net_runtime::create_device(processor, runtime)
-                .map_err(|error| error.to_string())?;
+    /// Returns [`NoiseNetError::Initialization`] if model initialization panics.
+    pub fn from_device(device: Device, warm_up: bool) -> Result<Self, NoiseNetError> {
+        catch_unwind(AssertUnwindSafe(|| {
             let mut network = Self {
                 network: StreamingNetwork::new(device),
                 dsp: DspState::new(),
@@ -78,19 +73,13 @@ impl NoiseNet {
                 last_local_snr_db: -15.0,
                 last_voice_protected: false,
             };
-            if runtime == ComputeRuntime::Wgpu {
+            if warm_up {
                 network.warm_up();
                 network.reset();
             }
-            Ok::<_, String>(network)
-        })) {
-            Ok(Ok(network)) => Ok(network),
-            Ok(Err(error)) => Err(NoiseNetError::Initialization(error)),
-            Err(_) => Err(NoiseNetError::Initialization(format!(
-                "{} with {runtime}",
-                processor.name()
-            ))),
-        }
+            network
+        }))
+        .map_err(|_| NoiseNetError::Initialization("model loading or warm-up failed".to_owned()))
     }
 
     /// Process one 10 ms frame with continuous inference, adaptive feature

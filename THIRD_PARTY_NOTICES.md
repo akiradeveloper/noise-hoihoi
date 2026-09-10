@@ -37,6 +37,26 @@ dependency offers that choice; common Apache-2.0 and Boost Software License
 texts are installed at the root of `licenses/`. MIT-only and other dependencies
 retain their package-specific license files.
 
+## GPUI interface
+
+NoiseHoiHoi v0.7 uses GPUI and gpui-component through GPUI Kit. These projects
+are Apache-2.0 licensed:
+
+- https://github.com/zed-industries/zed
+- https://github.com/longbridge/gpui-kit
+
+The Windows platform crate carries a build-script change for Linux-hosted
+shader compilation; its renderer source is unchanged. The SDK compiler and
+Wine used by the build are not shipped with NoiseHoiHoi.
+
+Additional license supplements for rust-i18n, taffy, seahash, harfrust, xim,
+and hexf-parse are
+recorded in `packaging/licenses/README.md` in the source repository. In
+particular, seahash's standard MIT text and author attribution are reconstructed
+from its declared license and package authors because upstream has no separate
+license file. These supplements accompany the corresponding package metadata
+in the installed `licenses/rust` directories.
+
 ## VB-CABLE
 
 The Windows installer embeds the unmodified base VB-CABLE package from

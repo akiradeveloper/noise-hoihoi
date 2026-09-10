@@ -1,4 +1,4 @@
-# Windows v0.5 installer
+# Windows v0.7 installer
 
 Run the release build from a Linux host with Docker:
 
@@ -9,8 +9,9 @@ just build-windows
 It builds the Rust application with the optimized release profile and emits:
 
 ```text
-out/NoiseHoiHoi-v0.5-setup.exe
-out/NoiseHoiHoi-v0.5-audio-smoke.exe
+out/NoiseHoiHoi-v0.7-setup.exe
+out/NoiseHoiHoi-v0.7.exe
+out/NoiseHoiHoi-v0.7-audio-smoke.exe
 ```
 
 The build fetches the official base VB-CABLE Package 45 from VB-Audio, pins it
@@ -61,3 +62,17 @@ repository or Docker image.
 Build timestamps are normalized from `SOURCE_DATE_EPOCH`. By default, the
 outer build script uses the current Git commit timestamp; callers can override
 the environment variable with another non-negative Unix timestamp.
+
+## GPUI cross-compilation
+
+v0.7 uses GPUI and gpui-component through gpui-kit 0.6.1. GPUI's DirectX
+shaders are compiled to optimized bytecode using the x64 compiler from
+Microsoft.Windows.SDK.CPP 10.0.26100.1 under Wine in the build container.
+The NuGet archive is pinned to SHA-256
+`b4730a467a8f29145fc0136b2b3f626767e985f6aa6e32f1352953c38d6ff5d2`.
+The SDK and Wine are build-only tools; neither is installed on users' machines.
+The executable contains the shaders and requires no source checkout.
+
+`vendor/gpui-pre-windows` carries the small build-script adaptation for a Linux
+host. Its source and license remain attributed in the installer. See that
+crate's `README.noise-hoihoi.md` for the upstream revision and patch scope.

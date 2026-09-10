@@ -73,7 +73,9 @@ pub(super) fn find_vb_cable_playback_device(host: &cpal::Host) -> Result<Device,
             return Ok(device);
         }
     }
-    Err(EngineError::VbCablePlaybackNotFound)
+    Err(EngineError::VirtualOutputUnavailable(format!(
+        "VB-CABLE playback endpoint '{VB_CABLE_PLAYBACK_ENDPOINT_NAME}' is not available; install or enable VB-CABLE and restart Windows"
+    )))
 }
 
 pub(super) fn default_input_format(device: &Device) -> Result<SupportedStreamConfig, EngineError> {

@@ -1,4 +1,3 @@
-mod capture;
 mod pulse;
 
 use std::{
@@ -16,66 +15,22 @@ use libpulse_binding::{
     sample::{Format, Spec},
     stream::{FlagSet, PeekResult, SeekMode, State, Stream},
 };
-use rtrb::{Consumer, Producer, RingBuffer};
+use rtrb::{Consumer, Producer};
 
-use super::worker::{SignalMonitorWriter, WorkerConfig, spawn_worker};
 use crate::{
-    AudioDevice, AudioProcessor, EngineConfig, EngineError, EngineState, MetricsHandle,
-    PIPELINE_SAMPLE_RATE, SignalMonitorSample, config::latency_frames, metrics::SharedMetrics,
+    AudioDevice, AudioProcessor, EngineConfig, EngineError, EngineState, PIPELINE_SAMPLE_RATE,
+    RunningAudioEngine,
 };
-use capture::CaptureFilter;
+use noise_hoihoi_engine::{CaptureFilter, SharedMetrics};
 use pulse::{Connection, SINK_NAME, error};
 
-/// Owns the audio-server thread, processing thread, and virtual microphone.
-/// Dropping the engine disconnects streams and removes its virtual devices.
-#[derive(Debug)]
-pub struct RunningAudioEngine {
-    io: Option<JoinHandle<()>>,
-    worker: Option<JoinHandle<()>>,
-    stop: Arc<AtomicBool>,
-    metrics: MetricsHandle,
-    monitor_enabled: Arc<AtomicBool>,
-    monitor: Consumer<SignalMonitorSample>,
-}
-
-impl RunningAudioEngine {
-    #[must_use]
-    pub fn metrics(&self) -> MetricsHandle {
-        self.metrics.clone()
-    }
-
-    pub fn set_signal_monitor_enabled(&mut self, enabled: bool) {
-        self.monitor_enabled.store(false, Ordering::Release);
-        while self.monitor.pop().is_ok() {}
-        self.monitor_enabled.store(enabled, Ordering::Release);
-    }
-
-    pub fn drain_signal_monitor_samples(&mut self, destination: &mut Vec<SignalMonitorSample>) {
-        // Bound GUI work even if the producer continues writing concurrently.
-        let available = self.monitor.slots();
-        for _ in 0..available {
-            if let Ok(sample) = self.monitor.pop() {
-                destination.push(sample);
-            }
-        }
-    }
-
-    pub fn stop(self) {
-        drop(self);
-    }
-}
-
-impl Drop for RunningAudioEngine {
+struct LinuxRoute(Option<JoinHandle<()>>);
+impl Drop for LinuxRoute {
     fn drop(&mut self) {
-        self.monitor_enabled.store(false, Ordering::Release);
-        self.stop.store(true, Ordering::Release);
-        for handle in [&mut self.io, &mut self.worker] {
-            if let Some(handle) = handle.take() {
-                handle.thread().unpark();
-                let _ = handle.join();
-            }
+        if let Some(io) = self.0.take() {
+            io.thread().unpark();
+            let _ = io.join();
         }
-        self.metrics.0.set_state(EngineState::Stopped);
     }
 }
 
@@ -96,74 +51,41 @@ pub fn start<P: AudioProcessor>(
     config: &EngineConfig,
     processor: P,
 ) -> Result<RunningAudioEngine, EngineError> {
-    config.validate()?;
-    let target = latency_frames(PIPELINE_SAMPLE_RATE, config.target_latency_ms)?;
-    let capacity = (target * 4).max(8_192);
-    let (input, input_consumer) = RingBuffer::new(capacity);
-    let (mut output_producer, output) = RingBuffer::new(capacity);
-    let (monitor_producer, monitor) = RingBuffer::new(PIPELINE_SAMPLE_RATE as usize);
-    for _ in 0..target {
-        output_producer.push(0.0).map_err(error)?;
-    }
-    let shared = Arc::new(SharedMetrics::default());
-    shared.set_state(EngineState::Starting);
-    shared.set_buffered_output_frames(target);
-    let stop = Arc::new(AtomicBool::new(false));
-    let monitor_enabled = Arc::new(AtomicBool::new(false));
-    let worker = spawn_worker(
-        input_consumer,
-        output_producer,
-        processor,
-        WorkerConfig {
-            input_rate: PIPELINE_SAMPLE_RATE,
-            output_capacity: capacity,
-            target_output_frames: target,
-        },
-        SignalMonitorWriter::new(monitor_producer, Arc::clone(&monitor_enabled)),
-        Arc::clone(&stop),
-        Arc::clone(&shared),
-    )?;
-    let processing_thread = worker.thread().clone();
-    let mut engine = RunningAudioEngine {
-        io: None,
-        worker: Some(worker),
-        stop: Arc::clone(&stop),
-        metrics: MetricsHandle(Arc::clone(&shared)),
-        monitor_enabled,
-        monitor,
-    };
+    let (engine, ports) = RunningAudioEngine::prepare(config, PIPELINE_SAMPLE_RATE, processor)?;
+    let input = ports.input;
+    let output = ports.output;
+    let shared = ports.metrics;
+    let stop = ports.stop;
+    let processing_thread = ports.worker;
     let config = config.clone();
     let (ready, receiver) = mpsc::sync_channel(1);
-    engine.io = Some(
-        thread::Builder::new()
-            .name("noise-hoihoi-pulse".to_owned())
-            .spawn(move || {
-                // The lock spans both startup and cleanup, including failures. It is a
-                // kernel lock, automatically released even if the process is killed.
-                let setup = session_lock().and_then(|lock| {
-                    Route::new(&config, Arc::clone(&shared)).map(|route| (lock, route))
-                });
-                match setup {
-                    Ok((_lock, mut route)) => {
-                        shared.set_state(EngineState::Running);
-                        if ready.send(Ok(())).is_err() {
-                            return;
-                        }
-                        if let Err(err) =
-                            route.run(input, output, &processing_thread, &stop, &shared)
-                        {
-                            shared.mark_stream_fault(err.to_string());
-                        }
-                        stop.store(true, Ordering::Release);
-                        processing_thread.unpark();
+    let io = thread::Builder::new()
+        .name("noise-hoihoi-pulse".to_owned())
+        .spawn(move || {
+            // The lock spans both startup and cleanup, including failures. It is a
+            // kernel lock, automatically released even if the process is killed.
+            let setup = session_lock().and_then(|lock| {
+                Route::new(&config, Arc::clone(&shared)).map(|route| (lock, route))
+            });
+            match setup {
+                Ok((_lock, mut route)) => {
+                    shared.set_state(EngineState::Running);
+                    if ready.send(Ok(())).is_err() {
+                        return;
                     }
-                    Err(err) => {
-                        let _ = ready.send(Err(err));
+                    if let Err(err) = route.run(input, output, &processing_thread, &stop, &shared) {
+                        shared.mark_stream_fault(err.to_string());
                     }
+                    stop.store(true, Ordering::Release);
+                    processing_thread.unpark();
                 }
-            })
-            .map_err(error)?,
-    );
+                Err(err) => {
+                    let _ = ready.send(Err(err));
+                }
+            }
+        })
+        .map_err(error)?;
+    let engine = engine.with_route(LinuxRoute(Some(io)));
     receiver.recv().map_err(error)??;
     Ok(engine)
 }

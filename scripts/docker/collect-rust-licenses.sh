@@ -10,7 +10,7 @@ mkdir -p "$rust_license_root"
 while read -r package_name package_version _; do
     package_version="${package_version#v}"
     case "$package_name" in
-        noise-hoihoi-app | noise-hoihoi-engine | noise-net | noise-net-runtime)
+        noise-hoihoi-app | noise-hoihoi-engine | noise-hoihoi-session | noise-hoihoi-platform | noise-net | noise-net-runtime | noise-net-cli)
             continue
             ;;
     esac
@@ -24,6 +24,9 @@ while read -r package_name package_version _; do
             -print \
             -quit
     )"
+    if [[ "$package_name" == gpui-pre-windows ]]; then
+        package_directory="$repository_root/vendor/gpui-pre-windows"
+    fi
     if [[ -z "$package_directory" ]]; then
         echo "Could not locate sources for Rust dependency $package_name $package_version." >&2
         exit 1
@@ -66,6 +69,22 @@ while read -r package_name package_version _; do
     )
     if ((license_count == 0)); then
         case "$package_name:$declared_license" in
+            rust-i18n-macro:MIT | rust-i18n-support:MIT)
+                cp -- "$repository_root/packaging/licenses/rust-i18n-LICENSE-MIT.txt" \
+                    "$package_license_root/LICENSE-MIT"
+                ;;
+            seahash:MIT | taffy:MIT | harfrust:MIT)
+                cp -- "$repository_root/packaging/licenses/$package_name-LICENSE-MIT.txt" \
+                    "$package_license_root/LICENSE-MIT"
+                ;;
+            xim-ctext:MIT | xim-parser:MIT)
+                cp -- "$repository_root/packaging/licenses/xim-LICENSE-MIT.txt" \
+                    "$package_license_root/LICENSE-MIT"
+                ;;
+            hexf-parse:CC0-1.0)
+                cp -- "$repository_root/packaging/licenses/hexf-parse-LICENSE-CC0.txt" \
+                    "$package_license_root/LICENSE-CC0"
+                ;;
             mutants:MIT)
                 cp -- \
                     "$repository_root/packaging/licenses/mutants-LICENSE-MIT.txt" \

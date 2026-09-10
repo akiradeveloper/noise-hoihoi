@@ -6,7 +6,8 @@ use cpal::{
 };
 use rtrb::{Consumer, Producer};
 
-use crate::{EngineError, metrics::SharedMetrics};
+use crate::EngineError;
+use noise_hoihoi_engine::SharedMetrics;
 
 pub(super) fn build_input_stream(
     device: &Device,

@@ -12,13 +12,15 @@ vbcable_sha256=b950e39f01af1d04ea623c8f6d8eb9b6ea5c477c637295fabf20631c85116bfb
 
 cleanup() {
     local status=$?
+    if [[ -n "${xvfb_pid:-}" ]]; then kill "$xvfb_pid" 2>/dev/null || true; fi
     if [[ "${HOST_UID:-}" =~ ^[0-9]+$ && "${HOST_GID:-}" =~ ^[0-9]+$ ]]; then
         local generated
         for generated in \
             "$repository_root/out" \
             "$rust_target" \
             "$stage" \
-            "$third_party_cache"; do
+            "$third_party_cache" \
+            "$repository_root/target/gpui-sdk"; do
             if [[ -e "$generated" ]]; then
                 chown -R "$HOST_UID:$HOST_GID" "$generated"
             fi
@@ -64,13 +66,17 @@ app_binary="$rust_target/x86_64-pc-windows-gnu/release/noise-hoihoi-app.exe"
 smoke_binary="$rust_target/x86_64-pc-windows-gnu/release/audio-smoke.exe"
 installer="$repository_root/out/$installer_filename"
 smoke_output="$repository_root/out/$smoke_filename"
+app_output="$repository_root/out/$app_filename"
 
 mkdir -p "$repository_root/out"
-rm -f -- "$installer" "$smoke_output"
+rm -f -- "$installer" "$smoke_output" "$app_output"
 
 shellcheck \
     "$repository_root/scripts/docker/build-windows.sh" \
-    "$repository_root/scripts/docker/build-windows-inner.sh"
+    "$repository_root/scripts/docker/build-windows-inner.sh" \
+    "$repository_root/scripts/docker/collect-rust-licenses.sh" \
+    "$repository_root/scripts/docker/prepare-gpui-windows.sh" \
+    "$repository_root/scripts/docker/fxc-wine.sh"
 
 echo "[1/6] Fetching and validating the pinned VB-CABLE package"
 mkdir -p "$third_party_cache"
@@ -114,6 +120,12 @@ if ! grep -Fq 'Microsoft Windows Hardware Compatibility Publisher' <<<"$catalog_
     echo "The VB-CABLE catalog does not contain the expected Microsoft signer certificate." >&2
     exit 1
 fi
+
+export DISPLAY=:98
+Xvfb "$DISPLAY" -screen 0 1280x1024x24 -nolisten tcp -ac &
+xvfb_pid=$!
+bash "$repository_root/scripts/docker/prepare-gpui-windows.sh"
+export GPUI_FXC_PATH="$repository_root/scripts/docker/fxc-wine.sh"
 
 echo "[2/6] Checking the Windows application and smoke test"
 CARGO_TARGET_DIR="$rust_target" cargo clippy \
@@ -160,110 +172,10 @@ cp -- /usr/share/common-licenses/Apache-2.0 "$stage/licenses/Apache-2.0.txt"
 cp -- /usr/share/common-licenses/MPL-2.0 "$stage/licenses/MPL-2.0.txt"
 cp -- "$repository_root/packaging/licenses/BSL-1.0.txt" "$stage/licenses/"
 cp -- "$smoke_binary" "$smoke_output"
+cp -- "$app_binary" "$app_output"
 
-rust_license_root="$stage/licenses/rust"
-rust_dependency_list="$stage/licenses/RUST-DEPENDENCIES.txt"
-mkdir -p "$rust_license_root"
-: >"$rust_dependency_list"
-while read -r package_name package_version _; do
-    package_version="${package_version#v}"
-    case "$package_name" in
-        noise-hoihoi-app | noise-hoihoi-engine | noise-net | noise-net-runtime)
-            continue
-            ;;
-    esac
-
-    package_directory="$(
-        find "$CARGO_HOME/registry/src" \
-            -mindepth 2 \
-            -maxdepth 2 \
-            -type d \
-            -name "$package_name-$package_version" \
-            -print \
-            -quit
-    )"
-    if [[ -z "$package_directory" ]]; then
-        echo "Could not locate sources for Rust dependency $package_name $package_version." >&2
-        exit 1
-    fi
-
-    declared_license="$(
-        sed -n 's/^license = "\(.*\)"$/\1/p' "$package_directory/Cargo.toml" | head -n 1
-    )"
-    printf '%s %s\t%s\n' \
-        "$package_name" \
-        "$package_version" \
-        "${declared_license:-see bundled license files}" \
-        >>"$rust_dependency_list"
-
-    package_license_root="$rust_license_root/$package_name-$package_version"
-    mkdir -p "$package_license_root"
-    license_count=0
-    while IFS= read -r -d '' license_file; do
-        relative_license="${license_file#"$package_directory"/}"
-        mkdir -p "$package_license_root/$(dirname -- "$relative_license")"
-        cp -- "$license_file" "$package_license_root/$relative_license"
-        license_count=$((license_count + 1))
-    done < <(
-        find "$package_directory" \
-            -maxdepth 3 \
-            -type f \
-            \( \
-                -iname 'COPYING*' -o \
-                -iname 'COPYRIGHT*' -o \
-                -iname 'FONTLOG*' -o \
-                -ipath '*/fonts/*.txt' -o \
-                -iname 'LICENSE*' -o \
-                -iname 'NOTICE*' -o \
-                -iname 'OFL*' -o \
-                -iname 'UFL*' -o \
-                -iname 'UNLICENSE*' \
-            \) \
-            -print0 \
-            | sort -z
-    )
-    if ((license_count == 0)); then
-        case "$package_name:$declared_license" in
-            mutants:MIT)
-                cp -- \
-                    "$repository_root/packaging/licenses/mutants-LICENSE-MIT.txt" \
-                    "$package_license_root/LICENSE-MIT"
-                ;;
-            pulp-wasm-simd-flag:MIT)
-                cp -- \
-                    "$repository_root/packaging/licenses/pulp-LICENSE-MIT.txt" \
-                    "$package_license_root/LICENSE-MIT"
-                ;;
-            realfft:MIT)
-                cp -- \
-                    "$repository_root/packaging/licenses/realfft-LICENSE-MIT.txt" \
-                    "$package_license_root/LICENSE-MIT"
-                ;;
-            *:*Apache-2.0* | *:BSL-1.0 | *:MPL-2.0) ;;
-            *)
-                echo "Rust dependency $package_name $package_version has no bundled license file or supported common-license fallback." >&2
-                exit 1
-                ;;
-        esac
-        cp -- "$package_directory/Cargo.toml" "$package_license_root/Cargo.toml"
-        for attribution_file in Cargo.toml.orig README.md; do
-            if [[ -f "$package_directory/$attribution_file" ]]; then
-                cp -- "$package_directory/$attribution_file" \
-                    "$package_license_root/$attribution_file"
-            fi
-        done
-    fi
-done < <(
-    cargo tree \
-        --locked \
-        --target x86_64-pc-windows-gnu \
-        --edges normal,build \
-        --prefix none \
-        --format '{p}' \
-        -p noise-hoihoi-app \
-        | sed 's/ (\*)$//' \
-        | sort -u
-)
+bash "$repository_root/scripts/docker/collect-rust-licenses.sh" \
+    "$repository_root" "$stage" x86_64-pc-windows-gnu
 
 cat >"$stage/BUILD-INFO.txt" <<BUILD_INFO
 Product: NoiseHoiHoi $product_version
@@ -281,7 +193,7 @@ find "$stage" -exec touch -h --date="@$SOURCE_DATE_EPOCH" {} +
         printf '%s *%s\n' "$(sha256sum "$staged_file" | cut -d' ' -f1)" "$staged_file"
     done < <(find . -type f ! -name SHA256SUMS.txt -print0 | sort -z)
 ) >"$stage/SHA256SUMS.txt"
-touch --date="@$SOURCE_DATE_EPOCH" "$stage/SHA256SUMS.txt" "$smoke_output"
+touch --date="@$SOURCE_DATE_EPOCH" "$stage/SHA256SUMS.txt" "$smoke_output" "$app_output"
 
 if find "$stage" -type f \( \
     -iname '*.key' -o \
@@ -328,5 +240,5 @@ for required_payload in \
     fi
 done
 
-sha256sum "$installer" "$smoke_output"
-printf '%s\n' "$installer" "$smoke_output"
+sha256sum "$installer" "$smoke_output" "$app_output"
+printf '%s\n' "$installer" "$smoke_output" "$app_output"

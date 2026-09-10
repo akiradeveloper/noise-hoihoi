@@ -1,0 +1,24 @@
+[package]
+name = "noise-net-cli"
+description = "WAV inference and native processor discovery CLI for NoiseNet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "noise-net"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+hound.workspace = true
+noise-net = { path = "../../NoiseNet/crates/noise-net" }
+noise-net-runtime = { path = "../../NoiseNet/crates/noise-net-runtime" }
+
+[lints]
+workspace = true

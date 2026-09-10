@@ -1,15 +1,14 @@
-use std::{collections::VecDeque, sync::Mutex};
+use std::collections::VecDeque;
 
-use eframe::egui::{self, Color32, RichText, Stroke, StrokeKind};
-use noise_hoihoi_engine::{
-    EngineMetrics, EngineState, MetricsHandle, PIPELINE_SAMPLE_RATE, SignalMonitorSample,
+use gpui_kit::component::{ActiveTheme, StyledExt as _, TitleBar};
+use gpui_kit::{
+    App, Bounds, Context, Hsla, IntoElement, ParentElement, Pixels, Render, Styled, Window, canvas,
+    div, fill, point, prelude::*, px, size,
 };
+use noise_hoihoi_engine::{EngineMetrics, EngineState, PIPELINE_SAMPLE_RATE, SignalMonitorSample};
 
 const HISTORY_FRAMES: usize = PIPELINE_SAMPLE_RATE as usize;
-const PLOT_HEIGHT: f32 = 112.0;
-const MIN_MAIN_SCALE: f32 = 0.01;
-const MIN_DIFFERENCE_SCALE: f32 = 0.001;
-
+const MIN_SCALE: f32 = 0.01;
 #[derive(Clone, Debug, Default)]
 pub(super) struct SignalMonitorHistory {
     samples: VecDeque<SignalMonitorSample>,
@@ -96,262 +95,233 @@ impl SignalKind {
     }
 }
 
-pub(super) fn draw(
-    ui: &mut egui::Ui,
-    history: &Mutex<SignalMonitorHistory>,
-    metrics_handle: Option<&MetricsHandle>,
-) {
-    let metrics = metrics_handle.map_or_else(EngineMetrics::default, MetricsHandle::snapshot);
-    let error = metrics_handle.and_then(MetricsHandle::last_error);
-    // Release the history lock before invoking egui. A viewport repaint must
-    // never hold it while the root viewport updates or clears the history.
-    let history = history
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    let stats = history.stats();
-    let main_scale = (stats.input.peak.max(stats.output.peak) * 1.1).max(MIN_MAIN_SCALE);
-    let difference_scale = (stats.difference.peak * 1.1).max(MIN_DIFFERENCE_SCALE);
-
-    ui.heading("Signal Monitor");
-    ui.horizontal(|ui| {
-        ui.label("State");
-        let (state_text, color) = state_label(metrics.state, ui.visuals());
-        ui.label(RichText::new(state_text).color(color).strong());
-        ui.separator();
-        ui.weak("Processor-aligned 48 kHz mono · latest 1 second");
-    });
-    ui.add_space(8.0);
-
-    draw_plot(
-        ui,
-        "Input",
-        &history,
-        SignalKind::Input,
-        stats.input,
-        main_scale,
-        Color32::from_rgb(25, 110, 65),
-    );
-    draw_plot(
-        ui,
-        "Output",
-        &history,
-        SignalKind::Output,
-        stats.output,
-        main_scale,
-        Color32::from_rgb(30, 95, 180),
-    );
-    draw_plot(
-        ui,
-        "Difference (Input - Output)",
-        &history,
-        SignalKind::Difference,
-        stats.difference,
-        difference_scale,
-        Color32::from_rgb(180, 35, 45),
-    );
-
-    ui.add_space(8.0);
-    ui.separator();
-    ui.add_space(6.0);
-    draw_metrics(ui, metrics);
-
-    if let Some(error) = error {
-        ui.add_space(6.0);
-        ui.colored_label(ui.visuals().error_fg_color, error);
-    }
-    ui.add_space(6.0);
-    ui.weak("Input is aligned to the processor delay before calculating Difference.");
+#[derive(Default)]
+pub(super) struct SignalMonitor {
+    history: SignalMonitorHistory,
+    metrics: EngineMetrics,
+    error: Option<String>,
 }
 
-fn draw_plot(
-    ui: &mut egui::Ui,
-    title: &str,
+impl SignalMonitor {
+    pub fn update(
+        &mut self,
+        history: &SignalMonitorHistory,
+        metrics: EngineMetrics,
+        error: Option<String>,
+    ) {
+        self.history.clone_from(history);
+        self.metrics = metrics;
+        self.error = error;
+    }
+}
+
+impl Render for SignalMonitor {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let stats = self.history.stats();
+        let peak = stats
+            .input
+            .peak
+            .max(stats.output.peak)
+            .max(stats.difference.peak);
+        let scale = (peak * 1.1).max(MIN_SCALE);
+        let (label, color) = state_label(self.metrics.state, cx);
+        let content = div().id("signal-scroll").w_full().flex_1().min_h_0().overflow_y_scroll()
+            .bg(cx.theme().background).text_color(cx.theme().foreground).text_sm()
+            .child(div().v_flex().p_5().gap_3()
+                .child(div().h_flex().justify_between().child(div().font_semibold().child("Signal Monitor")).child(div().text_color(color).child(label)))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Processor-aligned 48 kHz mono · latest 1 second"))
+                .child(plot("Input", &self.history, SignalKind::Input, stats.input, scale, cx.theme().success, cx))
+                .child(plot("Output", &self.history, SignalKind::Output, stats.output, scale, cx.theme().primary, cx))
+                .child(plot("Difference (Input − Output)", &self.history, SignalKind::Difference, stats.difference, scale, cx.theme().danger, cx))
+                .child(div().h_flex().justify_between().text_xs().text_color(cx.theme().muted_foreground).child("−1.0 s").child("−0.5 s").child("0 s"))
+                .child(div().border_t_1().border_color(cx.theme().border).pt_3().v_flex().gap_1()
+                    .child(div().font_semibold().child("Audio health"))
+                    .children(metric_rows(self.metrics).into_iter().map(|(label, value)| div().h_flex().justify_between().gap_3().text_xs().child(label).child(value))))
+                .when_some(self.error.clone(), |panel, error| panel.child(div().text_color(cx.theme().danger).child(error)))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Input is aligned to processor delay. Difference includes all changes to the signal, including voice.")));
+        div()
+            .v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(TitleBar::new().child(crate::app::window_title("NoiseHoiHoi - Signal Monitor")))
+            .child(content)
+    }
+}
+
+fn metric_rows(metrics: EngineMetrics) -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "Output buffer",
+            format!(
+                "{} frames ({:.1} ms)",
+                metrics.buffered_output_frames,
+                f64::from(metrics.buffered_output_frames) / 48.0
+            ),
+        ),
+        ("Processed", format!("{} frames", metrics.processed_frames)),
+        (
+            "Dropped input / inserted silence",
+            format!(
+                "{} / {}",
+                metrics.dropped_input_frames, metrics.inserted_silence_frames
+            ),
+        ),
+        (
+            "Input / output discontinuities",
+            format!(
+                "{} / {}",
+                metrics.input_discontinuities, metrics.output_discontinuities
+            ),
+        ),
+        (
+            "Stream faults / monitor drops",
+            format!(
+                "{} / {}",
+                metrics.stream_faults, metrics.dropped_signal_monitor_frames
+            ),
+        ),
+        (
+            "Max processing",
+            format!(
+                "{}.{:02} ms",
+                metrics.max_processing_time_us / 1_000,
+                metrics.max_processing_time_us % 1_000 / 10
+            ),
+        ),
+        (
+            "Deadline misses",
+            metrics.processing_deadline_misses.to_string(),
+        ),
+    ]
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn plot(
+    title: &'static str,
     history: &SignalMonitorHistory,
     kind: SignalKind,
     stats: SignalStats,
     scale: f32,
-    color: Color32,
-) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(title).strong());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.weak(format!(
-                "scale ±{} · RMS {} · Peak {}",
-                amplitude_text(scale),
-                dbfs_text(stats.rms),
-                dbfs_text(stats.peak),
-            ));
-        });
-    });
-
-    let desired_size = egui::vec2(ui.available_width().max(200.0), PLOT_HEIGHT);
-    let (rect, _) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
-    painter.rect_stroke(
-        rect,
-        4.0,
-        Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
-        StrokeKind::Inside,
-    );
-    painter.hline(
-        rect.x_range(),
-        rect.center().y,
-        Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
-    );
-
-    if history.samples.is_empty() {
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "Waiting for audio…",
-            egui::FontId::proportional(13.0),
-            ui.visuals().weak_text_color(),
-        );
-        return;
-    }
-
-    draw_envelope(&painter, rect, history, kind, scale, color);
+    color: Hsla,
+    cx: &App,
+) -> impl IntoElement {
+    let samples = history
+        .samples
+        .iter()
+        .map(|sample| kind.sample(*sample))
+        .collect::<Vec<_>>();
+    let grid_color = cx.theme().border;
+    let empty = samples.is_empty();
+    div()
+        .v_flex()
+        .gap_1()
+        .child(
+            div()
+                .h_flex()
+                .justify_between()
+                .flex_wrap()
+                .gap_1()
+                .text_xs()
+                .child(title)
+                .child(div().text_color(cx.theme().muted_foreground).child(format!(
+                    "Scale ±{scale:.3} · RMS {} · Peak {}",
+                    dbfs_text(stats.rms),
+                    dbfs_text(stats.peak)
+                ))),
+        )
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(104.0))
+                .rounded_md()
+                .bg(cx.theme().muted)
+                .child(
+                    canvas(
+                        move |bounds, _, _| {
+                            envelope(&samples, f32::from(bounds.size.width).max(1.0) as usize)
+                        },
+                        move |bounds, columns, window, _| {
+                            window.paint_quad(fill(
+                                Bounds::new(
+                                    point(bounds.left(), bounds.center().y),
+                                    size(bounds.size.width, px(1.0)),
+                                ),
+                                grid_color,
+                            ));
+                            paint_envelope(bounds, &columns, scale, color, window);
+                        },
+                    )
+                    .size_full(),
+                )
+                .when(empty, |plot| {
+                    plot.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Waiting for audio…"),
+                    )
+                }),
+        )
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss
-)]
-fn draw_envelope(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    history: &SignalMonitorHistory,
-    kind: SignalKind,
-    scale: f32,
-    color: Color32,
-) {
-    let columns = (rect.width().floor() as usize).max(1);
-    let history_start = HISTORY_FRAMES.saturating_sub(history.samples.len());
-    let columns_f32 = columns as f32;
-    let half_height = (rect.height() * 0.5 - 3.0).max(1.0);
-
-    for column in 0..columns {
-        let frame_start = column * HISTORY_FRAMES / columns;
-        let frame_end = ((column + 1) * HISTORY_FRAMES / columns).max(frame_start + 1);
-        let visible_start = frame_start.max(history_start);
-        let visible_end = frame_end.min(HISTORY_FRAMES);
-        if visible_start >= visible_end {
-            continue;
-        }
-
-        let mut minimum = f32::INFINITY;
-        let mut maximum = f32::NEG_INFINITY;
-        for sample_index in visible_start..visible_end {
-            if let Some(&sample) = history.samples.get(sample_index - history_start) {
-                let value = kind.sample(sample);
-                minimum = minimum.min(value);
-                maximum = maximum.max(value);
+// Preserve impulses by retaining both extrema per pixel, not every Nth sample.
+fn envelope(samples: &[f32], columns: usize) -> Vec<Option<(f32, f32)>> {
+    let history_start = HISTORY_FRAMES.saturating_sub(samples.len());
+    (0..columns)
+        .map(|column| {
+            let frame_start = column * HISTORY_FRAMES / columns;
+            let start = frame_start.max(history_start);
+            let end = (((column + 1) * HISTORY_FRAMES / columns).max(frame_start + 1))
+                .min(HISTORY_FRAMES);
+            if start >= end {
+                return None;
             }
-        }
-        if !minimum.is_finite() || !maximum.is_finite() {
-            continue;
-        }
+            samples
+                .get(start - history_start..end - history_start)
+                .map(|values| {
+                    values
+                        .iter()
+                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &value| {
+                            (min.min(value), max.max(value))
+                        })
+                })
+        })
+        .collect()
+}
 
-        let x = rect.left() + (column as f32 + 0.5) * rect.width() / columns_f32;
-        let top = rect.center().y - (maximum / scale).clamp(-1.0, 1.0) * half_height;
-        let bottom = rect.center().y - (minimum / scale).clamp(-1.0, 1.0) * half_height;
-        painter.line_segment(
-            [egui::pos2(x, top), egui::pos2(x, bottom)],
-            Stroke::new(1.0, color),
-        );
+#[allow(clippy::cast_precision_loss)]
+fn paint_envelope(
+    bounds: Bounds<Pixels>,
+    columns: &[Option<(f32, f32)>],
+    scale: f32,
+    color: Hsla,
+    window: &mut Window,
+) {
+    let half_height = (f32::from(bounds.size.height) * 0.5 - 3.0).max(1.0);
+    let width = f32::from(bounds.size.width) / columns.len().max(1) as f32;
+    for (index, column) in columns.iter().enumerate() {
+        if let Some((minimum, maximum)) = column {
+            let top = bounds.center().y - px((maximum / scale).clamp(-1.0, 1.0) * half_height);
+            let bottom = bounds.center().y - px((minimum / scale).clamp(-1.0, 1.0) * half_height);
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(bounds.left() + px(index as f32 * width), top),
+                    size(px(width.max(1.0)), (bottom - top).max(px(1.0))),
+                ),
+                color,
+            ));
+        }
     }
 }
 
-fn draw_metrics(ui: &mut egui::Ui, metrics: EngineMetrics) {
-    ui.label(RichText::new("Audio health").strong());
-    egui::Grid::new("signal-monitor-metrics")
-        .num_columns(4)
-        .striped(true)
-        .show(ui, |ui| {
-            metric(
-                ui,
-                "Output buffer",
-                format_buffer(metrics.buffered_output_frames),
-            );
-            metric(
-                ui,
-                "Processed",
-                format!("{} frames", metrics.processed_frames),
-            );
-            ui.end_row();
-            metric(
-                ui,
-                "Dropped input",
-                metrics.dropped_input_frames.to_string(),
-            );
-            metric(
-                ui,
-                "Inserted silence",
-                metrics.inserted_silence_frames.to_string(),
-            );
-            ui.end_row();
-            metric(
-                ui,
-                "Input discontinuities",
-                metrics.input_discontinuities.to_string(),
-            );
-            metric(
-                ui,
-                "Output discontinuities",
-                metrics.output_discontinuities.to_string(),
-            );
-            ui.end_row();
-            metric(ui, "Stream faults", metrics.stream_faults.to_string());
-            metric(
-                ui,
-                "Monitor drops",
-                metrics.dropped_signal_monitor_frames.to_string(),
-            );
-            ui.end_row();
-            metric(
-                ui,
-                "Max processing",
-                format_processing_time(metrics.max_processing_time_us),
-            );
-            metric(
-                ui,
-                "Deadline misses",
-                metrics.processing_deadline_misses.to_string(),
-            );
-            ui.end_row();
-        });
-}
-
-fn metric(ui: &mut egui::Ui, label: &str, value: String) {
-    ui.weak(label);
-    ui.label(value);
-}
-
-fn format_buffer(frames: u32) -> String {
-    let milliseconds = f64::from(frames) * 1_000.0 / f64::from(PIPELINE_SAMPLE_RATE);
-    format!("{frames} frames ({milliseconds:.1} ms)")
-}
-
-fn format_processing_time(microseconds: u64) -> String {
-    format!(
-        "{}.{:02} ms",
-        microseconds / 1_000,
-        microseconds % 1_000 / 10
-    )
-}
-
-fn amplitude_text(amplitude: f32) -> String {
-    if amplitude >= 0.1 {
-        format!("{amplitude:.2}")
-    } else {
-        format!("{amplitude:.3}")
-    }
-}
-
-fn dbfs_text(amplitude: f32) -> String {
+pub(super) fn dbfs_text(amplitude: f32) -> String {
     if amplitude > 0.0 {
         format!("{:.1} dBFS", 20.0 * amplitude.log10())
     } else {
@@ -359,31 +329,56 @@ fn dbfs_text(amplitude: f32) -> String {
     }
 }
 
-fn state_label(state: EngineState, visuals: &egui::Visuals) -> (&'static str, Color32) {
+pub(super) fn state_label(state: EngineState, cx: &App) -> (&'static str, Hsla) {
     match state {
-        EngineState::Starting => ("Starting", visuals.warn_fg_color),
-        EngineState::Running => ("Running", Color32::from_rgb(25, 110, 65)),
-        EngineState::Faulted => ("Audio error", visuals.error_fg_color),
-        EngineState::Stopped => ("Stopped", visuals.weak_text_color()),
+        EngineState::Starting => ("Starting", cx.theme().warning),
+        EngineState::Running => ("Running", cx.theme().success),
+        EngineState::Faulted => ("Audio error", cx.theme().danger),
+        EngineState::Stopped => ("Stopped", cx.theme().muted_foreground),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use noise_hoihoi_engine::SignalMonitorSample;
-
-    use super::{HISTORY_FRAMES, SignalMonitorHistory};
+    use super::*;
 
     #[test]
-    fn history_keeps_only_the_latest_second() {
+    fn history_retains_latest_second_and_preserves_impulses_in_envelope() {
         let mut history = SignalMonitorHistory::default();
         history.append(&vec![SignalMonitorSample::default(); HISTORY_FRAMES]);
         history.append(&[SignalMonitorSample {
             input: 1.0,
-            output: 0.0,
+            output: 0.25,
         }]);
-
         assert_eq!(history.samples.len(), HISTORY_FRAMES);
-        assert_eq!(history.samples.back().map(|sample| sample.input), Some(1.0));
+        let values: Vec<_> = history.samples.iter().map(|sample| sample.input).collect();
+        let columns = envelope(&values, 400);
+        assert_eq!(columns.last(), Some(&Some((0.0, 1.0))));
+        assert_eq!(
+            history.samples.back().unwrap().difference().to_bits(),
+            0.75_f32.to_bits()
+        );
+    }
+
+    #[test]
+    fn partial_history_is_right_aligned_and_pass_through_difference_is_zero() {
+        let mut history = SignalMonitorHistory::default();
+        history.append(&vec![
+            SignalMonitorSample {
+                input: -0.25,
+                output: -0.25
+            };
+            HISTORY_FRAMES / 2
+        ]);
+        let values: Vec<_> = history
+            .samples
+            .iter()
+            .map(|sample| sample.difference())
+            .collect();
+        let columns = envelope(&values, 100);
+        assert!(columns[..50].iter().all(Option::is_none));
+        assert!(columns[50..].iter().all(|value| *value == Some((0.0, 0.0))));
+        history.clear();
+        assert!(envelope(&[], 100).iter().all(Option::is_none));
     }
 }

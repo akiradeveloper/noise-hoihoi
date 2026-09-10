@@ -1,3 +1,4 @@
+use noise_net_runtime::{ComputeRuntime, create_device, processors};
 use std::{
     path::{Path, PathBuf},
     time::Instant,
@@ -5,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use noise_net::{ALGORITHM_LATENCY_SAMPLES, FRAME_SIZE, NoiseNet, SAMPLE_RATE, processors};
+use noise_net::{ALGORITHM_LATENCY_SAMPLES, FRAME_SIZE, NoiseNet, SAMPLE_RATE};
 
 #[derive(Debug, Parser)]
 #[command(about = "Enhance a 48 kHz WAV with Burn DeepFilterNet3")]
@@ -50,8 +51,11 @@ fn main() -> Result<()> {
     let input = args.input.expect("clap requires an input path");
     let output = args.output.expect("clap requires an output path");
     let samples = read_wav(&input)?;
-    let mut net = NoiseNet::new(processor, processor.default_runtime())
-        .with_context(|| format!("could not initialize NoiseNet on {}", processor.name()))?;
+    let mut net = NoiseNet::from_device(
+        create_device(processor, processor.default_runtime())?,
+        processor.default_runtime() == ComputeRuntime::Wgpu,
+    )
+    .with_context(|| format!("could not initialize NoiseNet on {}", processor.name()))?;
     let started = Instant::now();
     let enhanced = enhance(&mut net, &samples);
     let elapsed = started.elapsed();

@@ -51,4 +51,4 @@ done
 pactl info >/dev/null
 pactl load-module module-null-sink sink_name=test_sink rate=48000 channels=1 channel_map=mono >/dev/null
 pactl load-module module-remap-source master=test_sink.monitor source_name=test_microphone channels=1 channel_map=mono >/dev/null
-cargo test --locked --release -p noise-hoihoi-app -p noise-hoihoi-engine --test linux_audio -- --ignored --nocapture
+cargo test --locked --release -p noise-hoihoi-platform --test linux_audio -- --ignored --nocapture

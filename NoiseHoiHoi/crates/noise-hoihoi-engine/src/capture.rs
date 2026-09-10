@@ -3,7 +3,7 @@ use crate::PIPELINE_SAMPLE_RATE;
 /// Linux capture sources can carry a substantial DC offset. Remove it
 /// before resampling, inference, and metering so it cannot dominate the monitor
 /// scale or the model's input level. The fixed 10 Hz cutoff is below speech.
-pub(super) struct CaptureFilter {
+pub struct CaptureFilter {
     previous_input: Option<f32>,
     previous_output: f32,
     feedback: f32,
@@ -22,12 +22,12 @@ impl Default for CaptureFilter {
 }
 
 impl CaptureFilter {
-    pub(super) fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.previous_input = None;
         self.previous_output = 0.0;
     }
 
-    pub(super) fn process(&mut self, sample: f32) -> f32 {
+    pub fn process(&mut self, sample: f32) -> f32 {
         if !sample.is_finite() {
             self.reset();
             return 0.0;

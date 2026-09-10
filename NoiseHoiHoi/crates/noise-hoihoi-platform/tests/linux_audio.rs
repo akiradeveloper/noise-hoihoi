@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use noise_hoihoi_engine::{EngineConfig, EngineState, PassThrough, input_devices, start};
+use noise_hoihoi_platform::{EngineConfig, EngineState, PassThrough, input_devices, start};
 use std::{
     fs,
     process::{Child, Command, Stdio},
@@ -129,7 +129,7 @@ fn virtual_microphone_routes_audio_and_cleans_up() {
     assert_cpu_reduction_with_monitor(&input_file);
 }
 
-fn assert_monitor_tone(monitor: &[noise_hoihoi_engine::SignalMonitorSample]) {
+fn assert_monitor_tone(monitor: &[noise_hoihoi_platform::SignalMonitorSample]) {
     assert!(!monitor.is_empty());
     assert!(
         monitor
@@ -223,13 +223,13 @@ fn crash_route_child() {
 }
 
 fn assert_cpu_reduction_with_monitor(input_file: &std::path::Path) {
-    let cpu = noise_hoihoi_engine::compute_processors()
+    let cpu = noise_hoihoi_platform::compute_processors()
         .into_iter()
         .find(|p| !p.is_gpu())
         .unwrap();
     for _ in 0..2 {
         let processor =
-            noise_hoihoi_engine::NoiseReduction::new(&cpu, cpu.default_runtime()).unwrap();
+            noise_hoihoi_platform::NoiseReduction::new(&cpu, cpu.default_runtime()).unwrap();
         let mut engine = start(&EngineConfig::new("test_microphone"), processor).unwrap();
         engine.set_signal_monitor_enabled(true);
         let _player = Process(

@@ -1,696 +1,525 @@
 use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, TryRecvError},
-    },
-    thread::JoinHandle,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
-use eframe::egui::{self, Color32, RichText};
-use noise_hoihoi_engine::{
-    AudioDevice, ComputeProcessor, EngineConfig, EngineError, EngineState, MetricsHandle,
-    NoiseReduction, OUTPUT_MICROPHONE_NAME, PassThrough, RunningAudioEngine, SignalMonitorSample,
-    compute_processors, input_devices, start,
+use crate::signal_monitor::{self, SignalMonitor, SignalMonitorHistory};
+use gpui_kit::component::{
+    ActiveTheme, Disableable as _, IndexPath, Root, StyledExt as _, TitleBar,
+    button::Button,
+    select::{Select, SelectEvent, SelectItem, SelectState},
+    switch::Switch,
 };
-use serde::{Deserialize, Serialize};
+use gpui_kit::{
+    App, AppContext as _, Bounds, Context, Entity, Image, ImageFormat, IntoElement, ParentElement,
+    Render, SharedString, Styled, Subscription, Task, TitlebarOptions, Window, WindowBounds,
+    WindowDecorations, WindowHandle, WindowOptions, div, img, prelude::*, px, relative, size,
+};
+use noise_hoihoi_engine::{EngineMetrics, EngineState, SignalMonitorSample};
+use noise_hoihoi_platform::NativeBackend;
+use noise_hoihoi_session::Session;
 
-use crate::signal_monitor::{self, SignalMonitorHistory};
-
-const APP_NAME: &str = "NoiseHoiHoi";
-const SETTINGS_KEY: &str = "noise-hoihoi-settings";
-const INITIAL_LAYOUT_WIDTH: f32 = 440.0;
-const PANEL_MARGIN: i8 = 8;
-const SIGNAL_MONITOR_TITLE: &str = "NoiseHoiHoi - Signal Monitor";
-const SIGNAL_MONITOR_WIDTH: f32 = 760.0;
-const SIGNAL_MONITOR_HEIGHT: f32 = 620.0;
-const SIGNAL_MONITOR_VIEWPORT_ID: &str = "noise-hoihoi-signal-monitor";
 const UI_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
+const APP_ICON: &[u8] = include_bytes!("../../../../assets/NoiseHoiHoi.png");
+type DeviceSelect = Entity<SelectState<Vec<DeviceChoice>>>;
 
-pub fn run() -> eframe::Result {
-    let options = eframe::NativeOptions {
-        // On Wayland, waiting for swap on a hidden/occluded monitor viewport
-        // can block the single GUI event loop. Repaints are already timed.
-        // https://docs.rs/glutin/0.32.3/glutin/surface/enum.SwapInterval.html
-        #[cfg(target_os = "linux")]
-        glow_options: egui_glow::GlowConfiguration {
-            vsync: false,
-            ..Default::default()
-        },
-        viewport: egui::ViewportBuilder::default()
-            .with_app_id("NoiseHoiHoi")
-            .with_icon(app_icon())
-            // Bootstrap the first layout; subsequent sizes come from its contents.
-            .with_inner_size([INITIAL_LAYOUT_WIDTH, 160.0])
-            .with_resizable(true),
-        persist_window: false,
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        APP_NAME,
-        options,
-        Box::new(|context| Ok(Box::new(NoiseHoiHoiApp::new(context)))),
-    )
+pub fn run() {
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(|cx| {
+            gpui_kit::init(cx);
+            let options = window_options("NoiseHoiHoi", 440.0, 640.0, cx);
+            cx.open_window(options, |window, cx| {
+                let view = cx.new(|cx| NoiseHoiHoiApp::new(window, cx));
+                let weak = view.downgrade();
+                window.on_window_should_close(cx, move |_, cx| {
+                    let _ = weak.update(cx, NoiseHoiHoiApp::shutdown);
+                    false
+                });
+                cx.new(|cx| Root::new(view, window, cx))
+            })
+            .expect("Could not open the NoiseHoiHoi window");
+            cx.activate(true);
+        });
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct Settings {
-    input_device_id: Option<String>,
-    #[serde(default)]
-    noise_reduction: bool,
-    #[serde(default)]
-    processor_id: Option<String>,
+pub(super) fn window_options(title: &str, width: f32, height: f32, cx: &App) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+            None,
+            size(px(width), px(height)),
+            cx,
+        ))),
+        titlebar: Some(TitlebarOptions {
+            title: Some(title.to_owned().into()),
+            ..TitleBar::title_bar_options()
+        }),
+        app_id: Some("NoiseHoiHoi".into()),
+        window_decorations: Some(WindowDecorations::Client),
+        window_min_size: Some(size(px(width.min(360.0)), px(300.0))),
+        icon: Some(std::sync::Arc::new(
+            image::load_from_memory(APP_ICON)
+                .expect("bundled application icon")
+                .into_rgba8(),
+        )),
+        ..Default::default()
+    }
+}
+
+pub(super) fn window_title(title: &'static str) -> impl IntoElement {
+    static ICON: OnceLock<Arc<Image>> = OnceLock::new();
+    let icon =
+        ICON.get_or_init(|| Arc::new(Image::from_bytes(ImageFormat::Png, APP_ICON.to_vec())));
+    div()
+        .h_flex()
+        .gap_2()
+        .child(img(icon.clone()).size(px(16.0)).flex_shrink_0())
+        .child(title)
+}
+
+#[derive(Clone)]
+struct DeviceChoice {
+    id: String,
+    label: SharedString,
+}
+
+impl SelectItem for DeviceChoice {
+    type Value = String;
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+    fn value(&self) -> &String {
+        &self.id
+    }
 }
 
 struct NoiseHoiHoiApp {
-    settings: Settings,
-    devices: Vec<AudioDevice>,
-    processors: Vec<ComputeProcessor>,
-    engine: Option<RunningAudioEngine>,
-    engine_start: Option<EngineStart>,
-    error: Option<String>,
-    notice: Option<String>,
-    content_size: Option<egui::Vec2>,
-    resize_attempts: u8,
-    signal_monitor_open: Arc<AtomicBool>,
-    signal_monitor_enabled: bool,
-    signal_history: Arc<Mutex<SignalMonitorHistory>>,
+    session: Session<NativeBackend>,
+    input_select: DeviceSelect,
+    processor_select: DeviceSelect,
+    monitor: Option<WindowHandle<Root>>,
+    signal_view: Option<Entity<SignalMonitor>>,
+    signal_history: SignalMonitorHistory,
     pending_signal_samples: Vec<SignalMonitorSample>,
-}
-
-struct EngineStart {
-    receiver: Receiver<Result<RunningAudioEngine, EngineError>>,
-    worker: JoinHandle<()>,
+    shutting_down: bool,
+    subscriptions: Vec<Subscription>,
+    refresh: Option<Task<()>>,
 }
 
 impl NoiseHoiHoiApp {
-    fn new(context: &eframe::CreationContext<'_>) -> Self {
-        context.egui_ctx.set_theme(egui::Theme::Light);
-        context.egui_ctx.set_visuals_of(
-            egui::Theme::Light,
-            egui::Visuals {
-                weak_text_color: Some(Color32::from_gray(80)),
-                warn_fg_color: Color32::from_rgb(135, 85, 0),
-                error_fg_color: Color32::from_rgb(180, 35, 45),
-                ..egui::Visuals::light()
-            },
-        );
-        let settings = context
-            .storage
-            .and_then(|storage| eframe::get_value(storage, SETTINGS_KEY))
-            .unwrap_or_default();
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let input_select = cx.new(|cx| SelectState::new(Vec::new(), None, window, cx));
+        let processor_select = cx.new(|cx| SelectState::new(Vec::new(), None, window, cx));
         let mut app = Self {
-            settings,
-            devices: Vec::new(),
-            processors: Vec::new(),
-            engine: None,
-            engine_start: None,
-            error: None,
-            notice: None,
-            content_size: None,
-            resize_attempts: 0,
-            signal_monitor_open: Arc::new(AtomicBool::new(false)),
-            signal_monitor_enabled: false,
-            signal_history: Arc::new(Mutex::new(SignalMonitorHistory::default())),
+            session: Session::new(NativeBackend),
+            input_select,
+            processor_select,
+            monitor: None,
+            signal_view: None,
+            signal_history: SignalMonitorHistory::default(),
             pending_signal_samples: Vec::new(),
+            shutting_down: false,
+            subscriptions: Vec::new(),
+            refresh: None,
         };
-        app.refresh_devices();
-        app.refresh_processors();
-        if app.settings.input_device_id.is_some() {
-            app.start();
+        app.sync_choices(window, cx);
+        app.subscriptions.push(cx.subscribe_in(
+            &app.input_select,
+            window,
+            |app, _, event, _, cx| {
+                let SelectEvent::Confirm(value) = event;
+                if app.session.settings.input_device_id != *value && !app.busy() {
+                    app.session.settings.input_device_id.clone_from(value);
+                    app.apply_settings(cx);
+                }
+            },
+        ));
+        app.subscriptions.push(cx.subscribe_in(
+            &app.processor_select,
+            window,
+            |app, _, event, _, cx| {
+                let SelectEvent::Confirm(value) = event;
+                if app.session.settings.processor_id != *value && !app.busy() {
+                    app.session.settings.processor_id.clone_from(value);
+                    app.session.notice = None;
+                    app.apply_settings(cx);
+                }
+            },
+        ));
+        // OS/session quit also tears down the route when no window close callback runs.
+        app.subscriptions.push(cx.on_app_quit(|app, cx| {
+            let shutdown = app.session.take_shutdown();
+            cx.background_executor().spawn(async move {
+                shutdown.finish();
+            })
+        }));
+        app.refresh = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(UI_REFRESH_INTERVAL).await;
+                if this.update(cx, NoiseHoiHoiApp::tick).is_err() {
+                    break;
+                }
+            }
+        }));
+        if app.session.settings.input_device_id.is_some() {
+            app.session.start();
         }
         app
     }
 
-    fn refresh_processors(&mut self) {
-        self.processors = compute_processors();
-        let selection_is_valid = self
-            .settings
-            .processor_id
-            .as_ref()
-            .is_some_and(|id| self.processors.iter().any(|processor| processor.id() == id));
-        if selection_is_valid {
-            return;
-        }
-
-        let missing_selection = self.settings.processor_id.take();
-        self.settings.processor_id = self
+    fn sync_choices(&self, window: &mut Window, cx: &mut App) {
+        let inputs = self
+            .session
+            .devices
+            .iter()
+            .map(|device| DeviceChoice {
+                id: device.id.clone(),
+                label: if device.is_default {
+                    format!("{} (Default)", device.name)
+                } else {
+                    device.name.clone()
+                }
+                .into(),
+            })
+            .collect();
+        let processors = self
+            .session
             .processors
             .iter()
-            .find(|processor| !processor.is_gpu())
-            .or_else(|| self.processors.first())
-            .map(|processor| processor.id().to_owned());
-        if missing_selection.is_some() {
-            self.notice = Some(
-                "The selected processor is no longer available; using the CPU instead.".to_owned(),
-            );
-        }
+            .map(|processor| DeviceChoice {
+                id: processor.id().to_owned(),
+                label: processor.name().to_owned().into(),
+            })
+            .collect();
+        set_choices(
+            &self.input_select,
+            inputs,
+            self.session.settings.input_device_id.as_ref(),
+            window,
+            cx,
+        );
+        set_choices(
+            &self.processor_select,
+            processors,
+            self.session.settings.processor_id.as_ref(),
+            window,
+            cx,
+        );
     }
 
-    fn refresh_devices(&mut self) {
-        match input_devices() {
-            Ok(devices) => {
-                self.devices = devices;
-                let selection_is_valid = self
-                    .settings
-                    .input_device_id
-                    .as_ref()
-                    .is_some_and(|id| self.devices.iter().any(|device| device.id == *id));
-                if !selection_is_valid {
-                    self.settings.input_device_id = self
-                        .devices
-                        .iter()
-                        .find(|device| device.is_default)
-                        .or_else(|| self.devices.first())
-                        .map(|device| device.id.clone());
-                }
-                self.error = if self.devices.is_empty() {
-                    Some("No physical input microphone was found.".to_owned())
-                } else {
-                    None
-                };
-            }
-            Err(error) => {
-                self.devices.clear();
-                self.error = Some(error.to_string());
-            }
-        }
+    fn busy(&self) -> bool {
+        self.session.busy() || self.shutting_down
     }
 
-    fn selected_name(&self) -> &str {
-        self.settings
-            .input_device_id
-            .as_ref()
-            .and_then(|id| self.devices.iter().find(|device| device.id == *id))
-            .map_or("Select a microphone", |device| device.name.as_str())
+    fn apply_settings(&mut self, cx: &mut Context<Self>) {
+        self.session.apply_settings();
+        self.signal_history.clear();
+        cx.notify();
     }
 
-    fn selected_processor(&self) -> Option<&ComputeProcessor> {
-        self.settings.processor_id.as_ref().and_then(|id| {
-            self.processors
-                .iter()
-                .find(|processor| processor.id() == id)
-        })
-    }
-
-    fn selected_processor_name(&self) -> &str {
-        self.selected_processor()
-            .map_or("Select a processor", ComputeProcessor::name)
-    }
-
-    fn start(&mut self) {
-        if self.engine_start.is_some() {
+    fn tick(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
             return;
         }
-        let Some(input_device_id) = self.settings.input_device_id.clone() else {
-            self.error = Some("Select an input microphone first.".to_owned());
-            return;
-        };
-        let config = EngineConfig::new(input_device_id);
-        let processor = if self.settings.noise_reduction {
-            let Some(processor) = self.selected_processor().cloned() else {
-                self.error = Some("Select a compute processor first.".to_owned());
-                return;
-            };
-            Some(processor)
-        } else {
-            None
-        };
-
-        // Shutdown can wait for inference or the audio server. Keep it on the
-        // startup thread so changing settings never joins audio from the GUI.
-        let previous_engine = self.engine.take();
-        self.clear_signal_history();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        match std::thread::Builder::new()
-            .name("noise-hoihoi-start".to_owned())
-            .spawn(move || {
-                drop(previous_engine);
-                let result = if let Some(processor) = processor {
-                    NoiseReduction::new(&processor, processor.default_runtime())
-                        .and_then(|processor| start(&config, processor))
-                } else {
-                    start(&config, PassThrough)
-                };
-                let _ = sender.send(result);
-            }) {
-            Ok(worker) => {
-                self.engine_start = Some(EngineStart { receiver, worker });
-                self.error = None;
-            }
-            Err(error) => {
-                self.error = Some(format!("Failed to start the audio initialization: {error}"));
-            }
+        let was_starting = self.session.starting();
+        self.session.poll_engine_start();
+        if was_starting && !self.session.starting() {
+            self.signal_history.clear();
         }
-    }
-
-    fn poll_engine_start(&mut self) {
-        let result = match self.engine_start.as_ref() {
-            Some(starting) => match starting.receiver.try_recv() {
-                Ok(result) => Some(result),
-                Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Disconnected) => Some(Err(EngineError::Start(
-                    "audio initialization stopped unexpectedly".to_owned(),
-                ))),
-            },
-            None => None,
-        };
-        let Some(result) = result else {
-            return;
-        };
-
-        if let Some(starting) = self.engine_start.take() {
-            let _ = starting.worker.join();
+        if self.monitor.is_some_and(|handle| handle.read(cx).is_err()) {
+            self.monitor = None;
+            self.signal_view = None;
+            self.session.set_monitor_enabled(false);
+            self.signal_history.clear();
         }
-        match result {
-            Ok(mut engine) => {
-                let monitor_open = self.signal_monitor_open.load(Ordering::Acquire);
-                engine.set_signal_monitor_enabled(monitor_open);
-                self.engine = Some(engine);
-                self.signal_monitor_enabled = monitor_open;
-                self.clear_signal_history();
-                self.error = None;
-            }
-            Err(error) => self.error = Some(error.to_string()),
-        }
-    }
-
-    fn stop(&mut self) {
-        if let Some(engine) = self.engine.take() {
-            engine.stop();
-        }
-        self.clear_signal_history();
-    }
-
-    fn finish_pending_start(&mut self) {
-        if let Some(starting) = self.engine_start.take() {
-            drop(starting.receiver);
-            let _ = starting.worker.join();
-        }
-    }
-
-    fn draw_controls(&mut self, ui: &mut egui::Ui) {
-        ui.add_enabled_ui(self.engine_start.is_none(), |ui| {
-            self.draw_enabled_controls(ui);
-        });
-    }
-
-    fn draw_enabled_controls(&mut self, ui: &mut egui::Ui) {
-        let selection_before = self.settings.input_device_id.clone();
-        let reduction_before = self.settings.noise_reduction;
-        let processor_before = self.settings.processor_id.clone();
-        ui.horizontal(|ui| {
-            ui.label("Input");
-            egui::ComboBox::from_id_salt("input-device")
-                .selected_text(self.selected_name())
-                .width(285.0)
-                .show_ui(ui, |ui| {
-                    for device in &self.devices {
-                        let label = if device.is_default {
-                            format!("{} (Default)", device.name)
-                        } else {
-                            device.name.clone()
-                        };
-                        ui.selectable_value(
-                            &mut self.settings.input_device_id,
-                            Some(device.id.clone()),
-                            label,
-                        );
-                    }
-                });
-        });
-
-        ui.horizontal(|ui| {
-            ui.label("Output");
-            ui.label(OUTPUT_MICROPHONE_NAME);
-        });
-        ui.horizontal(|ui| {
-            ui.label("Noise reduction");
-            ui.checkbox(&mut self.settings.noise_reduction, "Enabled");
-        });
-        if self.settings.noise_reduction {
-            ui.horizontal(|ui| {
-                ui.label("Processor");
-                egui::ComboBox::from_id_salt("compute-processor")
-                    .selected_text(self.selected_processor_name())
-                    .width(285.0)
-                    .show_ui(ui, |ui| {
-                        for processor in &self.processors {
-                            ui.selectable_value(
-                                &mut self.settings.processor_id,
-                                Some(processor.id().to_owned()),
-                                processor.name(),
-                            );
-                        }
-                    });
+        if let Some(view) = &self.signal_view {
+            self.pending_signal_samples.clear();
+            self.session.drain_monitor(&mut self.pending_signal_samples);
+            self.signal_history.append(&self.pending_signal_samples);
+            let metrics = self.metrics();
+            let error = self.runtime_error();
+            view.update(cx, |monitor, cx| {
+                monitor.update(&self.signal_history, metrics, error);
+                cx.notify();
             });
-            if let Some(processor) = self
-                .selected_processor()
-                .filter(|processor| processor.is_gpu())
-            {
-                ui.horizontal(|ui| {
-                    ui.label("Runtime");
-                    let mut runtime = processor.default_runtime();
-                    egui::ComboBox::from_id_salt("compute-runtime")
-                        .selected_text(runtime.to_string())
-                        .width(285.0)
-                        .show_ui(ui, |ui| {
-                            for &available_runtime in processor.runtimes() {
-                                ui.selectable_value(
-                                    &mut runtime,
-                                    available_runtime,
-                                    available_runtime.to_string(),
-                                );
-                            }
-                        });
-                });
-            }
         }
+        if self.session.has_engine() || self.session.starting() || was_starting {
+            cx.notify();
+        }
+    }
 
-        if selection_before != self.settings.input_device_id
-            || reduction_before != self.settings.noise_reduction
-            || processor_before != self.settings.processor_id
+    fn metrics(&self) -> EngineMetrics {
+        self.session.metrics()
+    }
+
+    fn runtime_error(&self) -> Option<String> {
+        self.session.runtime_error()
+    }
+
+    fn open_monitor(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.monitor
+            && handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
         {
-            if processor_before != self.settings.processor_id {
-                self.notice = None;
-            }
-            self.start();
+            return;
         }
+        let options = window_options("NoiseHoiHoi - Signal Monitor", 760.0, 680.0, cx);
+        let view = cx.new(|_| SignalMonitor::default());
+        match cx.open_window(options, |window, cx| {
+            cx.new(|cx| Root::new(view.clone(), window, cx))
+        }) {
+            Ok(handle) => {
+                self.monitor = Some(handle);
+                self.signal_view = Some(view);
+                self.signal_history.clear();
+                self.session.set_monitor_enabled(true);
+            }
+            Err(error) => {
+                self.session.error = Some(format!("Could not open the signal monitor: {error}"));
+            }
+        }
+        cx.notify();
     }
 
-    fn draw_status(&mut self, ui: &mut egui::Ui) {
-        let metrics_handle = self.engine.as_ref().map(RunningAudioEngine::metrics);
-        let metrics = metrics_handle.as_ref().map(MetricsHandle::snapshot);
-        let runtime_error = metrics_handle.as_ref().and_then(MetricsHandle::last_error);
-        let (status, status_color) = match (
-            self.engine_start.is_some(),
-            metrics.map(|value| value.state),
-        ) {
-            (true, _) | (false, Some(EngineState::Starting)) => {
-                ("Starting", ui.visuals().warn_fg_color)
-            }
-            (false, Some(EngineState::Running)) => ("Running", Color32::from_rgb(25, 110, 65)),
-            (false, Some(EngineState::Faulted)) => ("Audio error", ui.visuals().error_fg_color),
-            _ => ("Stopped", ui.visuals().weak_text_color()),
-        };
-        let can_retry = self.engine_start.is_none()
-            && (self.engine.is_none()
-                || metrics.is_some_and(|value| value.state == EngineState::Faulted));
-        ui.horizontal(|ui| {
-            ui.label("Status");
-            ui.label(RichText::new(status).color(status_color).strong());
-            if can_retry
-                && ui
-                    .add_enabled(
-                        self.settings.input_device_id.is_some(),
-                        egui::Button::new("Retry"),
-                    )
-                    .clicked()
-            {
-                self.start();
-            }
+    fn shutdown(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        self.shutting_down = true;
+        self.refresh = None;
+        if let Some(handle) = self.monitor.take() {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+        self.signal_view = None;
+        let shutdown = self.session.take_shutdown();
+        let stop = cx.background_executor().spawn(async move {
+            shutdown.finish();
         });
+        cx.spawn(async move |_, cx| {
+            stop.await;
+            cx.update(|cx| cx.quit());
+        })
+        .detach();
+        cx.notify();
+    }
+}
 
-        let peak = metrics.map_or(0.0, |value| value.input_peak);
-        let peak_db = if peak > 0.0 {
-            20.0 * peak.log10()
+fn set_choices(
+    select: &DeviceSelect,
+    choices: Vec<DeviceChoice>,
+    selected: Option<&String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let index = choices
+        .iter()
+        .position(|choice| Some(&choice.id) == selected);
+    select.update(cx, |state, cx| {
+        state.set_items(choices, window, cx);
+        state.set_selected_index(index.map(|row| IndexPath::default().row(row)), window, cx);
+    });
+}
+
+impl Render for NoiseHoiHoiApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "declarative layout for the single control panel"
+    )]
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let metrics = self.metrics();
+        let (status, color) = if self.shutting_down {
+            ("Stopping…", cx.theme().warning)
+        } else if self.session.starting() {
+            ("Starting…", cx.theme().warning)
         } else {
-            -60.0
+            signal_monitor::state_label(metrics.state, cx)
         };
-        ui.horizontal(|ui| {
-            ui.label("Input level");
-            ui.add(
-                egui::ProgressBar::new(peak)
-                    .desired_width(280.0)
-                    .text(format!("{peak_db:.1} dBFS")),
-            );
-        });
-        if let Some(error) = self.error.as_ref().or(runtime_error.as_ref()) {
-            ui.add_space(8.0);
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        } else if let Some(notice) = &self.notice {
-            ui.add_space(8.0);
-            ui.colored_label(ui.visuals().warn_fg_color, notice);
-        }
-    }
-
-    fn draw_signal_monitor_button(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(10.0);
-        ui.separator();
-        ui.add_space(6.0);
-        if ui.button("Signal monitor…").clicked() {
-            if self.signal_monitor_open.load(Ordering::Acquire) {
-                ui.ctx().send_viewport_cmd_to(
-                    signal_monitor_viewport_id(),
-                    egui::ViewportCommand::Focus,
-                );
-            } else {
-                self.set_signal_monitor_open(true);
-            }
-        }
-    }
-
-    fn draw_panel(&mut self, ui: &mut egui::Ui) -> egui::Vec2 {
-        let panel = egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(ui.style()).inner_margin(PANEL_MARGIN))
-            .show(ui, |ui| {
-                egui::ScrollArea::both()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        // Separators stretch to the viewport, so measure the widgets separately.
-                        let controls = ui.vertical(|ui| self.draw_controls(ui));
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(10.0);
-                        let status = ui.vertical(|ui| self.draw_status(ui));
-                        self.draw_signal_monitor_button(ui);
-                        controls
-                            .response
-                            .rect
-                            .width()
-                            .max(status.response.rect.width())
+        let busy = self.busy();
+        let can_retry =
+            !busy && (!self.session.has_engine() || metrics.state == EngineState::Faulted);
+        let runtime = self
+            .session
+            .selected_processor()
+            .map(|processor| processor.default_runtime().to_string());
+        let error = self.runtime_error();
+        let content = div()
+            .id("main-scroll")
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .text_sm()
+            .child(
+                div()
+                    .v_flex()
+                    .p_5()
+                    .gap_4()
+                    .child(
+                        div()
+                            .h_flex()
+                            .justify_between()
+                            .child(div().font_semibold().child("NoiseHoiHoi"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(concat!("v", env!("CARGO_PKG_VERSION"))),
+                            ),
+                    )
+                    .child(
+                        div().v_flex().gap_2().child("Input microphone").child(
+                            Select::new(&self.input_select)
+                                .w_full()
+                                .disabled(busy)
+                                .placeholder("Select a microphone")
+                                .accessibility_label("Input microphone"),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .v_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .h_flex()
+                                    .justify_between()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Input level")
+                                    .child(signal_monitor::dbfs_text(metrics.input_peak)),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .h(px(6.0))
+                                    .rounded_sm()
+                                    .bg(cx.theme().muted)
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .w(relative(level_fraction(metrics.input_peak)))
+                                            .rounded_sm()
+                                            .bg(cx.theme().success),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .pt_4()
+                            .child(
+                                Switch::new("noise-reduction")
+                                    .label("Noise reduction")
+                                    .checked(self.session.settings.noise_reduction)
+                                    .disabled(busy)
+                                    .on_click(cx.listener(|app, checked, _, cx| {
+                                        if !app.busy() {
+                                            app.session.settings.noise_reduction = *checked;
+                                            app.apply_settings(cx);
+                                        }
+                                    })),
+                            ),
+                    )
+                    .when(self.session.settings.noise_reduction, |panel| {
+                        panel
+                            .child(
+                                div().v_flex().gap_2().child("Processor").child(
+                                    Select::new(&self.processor_select)
+                                        .w_full()
+                                        .disabled(busy)
+                                        .placeholder("Select a processor")
+                                        .accessibility_label("Compute processor"),
+                                ),
+                            )
+                            .when_some(runtime, |panel, runtime| {
+                                panel.child(
+                                    div()
+                                        .h_flex()
+                                        .justify_between()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("Runtime (automatic)")
+                                        .child(runtime),
+                                )
+                            })
                     })
-            });
-        egui::vec2(panel.inner.inner, panel.inner.content_size.y)
-            + egui::Vec2::splat(2.0 * f32::from(PANEL_MARGIN))
-    }
-
-    fn resize_to_content(&mut self, context: &egui::Context, content_size: egui::Vec2) {
-        let (actual_size, monitor_size, maximized) = context.input(|input| {
-            let viewport = input.viewport();
-            (
-                input.content_rect().size(),
-                viewport.monitor_size,
-                viewport.maximized == Some(true) || viewport.fullscreen == Some(true),
+                    .when(!self.session.settings.noise_reduction, |panel| {
+                        panel.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Pass-through · audio is forwarded unchanged"),
+                        )
+                    })
+                    .child(
+                        div()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .pt_4()
+                            .v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Output microphone"),
+                            )
+                            .child(self.session.output_name().to_owned()),
+                    )
+                    .child(
+                        div()
+                            .h_flex()
+                            .justify_between()
+                            .items_center()
+                            .child(div().text_color(color).child(status))
+                            .when(can_retry, |row| {
+                                row.child(Button::new("retry").label("Retry").on_click(
+                                    cx.listener(|app, _, window, cx| {
+                                        app.session.refresh_devices();
+                                        app.session.refresh_processors();
+                                        app.sync_choices(window, cx);
+                                        app.session.start();
+                                        cx.notify();
+                                    }),
+                                ))
+                            }),
+                    )
+                    .when_some(error, |panel, error| {
+                        panel.child(div().text_color(cx.theme().danger).child(error))
+                    })
+                    .when_some(self.session.notice.clone(), |panel, notice| {
+                        panel.child(div().text_xs().text_color(cx.theme().warning).child(notice))
+                    })
+                    .child(
+                        Button::new("signal-monitor")
+                            .label("Signal Monitor")
+                            .w_full()
+                            .disabled(self.shutting_down)
+                            .on_click(cx.listener(|app, _, _, cx| app.open_monitor(cx))),
+                    ),
+            );
+        div()
+            .v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(
+                TitleBar::new()
+                    .child(window_title("NoiseHoiHoi"))
+                    .on_close_window(cx.listener(|app, _, _, cx| app.shutdown(cx))),
             )
-        });
-        // Leave room for window decorations and the desktop panel on small displays.
-        let limit = monitor_size.map_or(egui::Vec2::INFINITY, |size| {
-            (size - egui::Vec2::splat(64.0)).max(egui::Vec2::splat(1.0))
-        });
-        let desired_size = content_size.ceil().min(limit);
-        if self.content_size != Some(desired_size) {
-            self.content_size = Some(desired_size);
-            self.resize_attempts = 3;
-        }
-        if maximized || (actual_size - desired_size).abs().max_elem() < 1.0 {
-            self.resize_attempts = 0;
-        } else if self.resize_attempts > 0 {
-            // Verify the actual viewport on later frames; a resize request is asynchronous.
-            context.send_viewport_cmd(egui::ViewportCommand::InnerSize(desired_size));
-            self.resize_attempts -= 1;
-            context.request_repaint_after(UI_REFRESH_INTERVAL);
-        }
-    }
-
-    fn set_signal_monitor_open(&mut self, open: bool) {
-        self.signal_monitor_open.store(open, Ordering::Release);
-        self.sync_signal_monitor_state();
-    }
-
-    fn sync_signal_monitor_state(&mut self) {
-        let requested = self.signal_monitor_open.load(Ordering::Acquire);
-        if requested == self.signal_monitor_enabled {
-            return;
-        }
-
-        if let Some(engine) = self.engine.as_mut() {
-            engine.set_signal_monitor_enabled(requested);
-        }
-        self.signal_monitor_enabled = requested;
-        self.clear_signal_history();
-    }
-
-    fn collect_signal_samples(&mut self) {
-        if !self.signal_monitor_enabled {
-            return;
-        }
-        let Some(engine) = self.engine.as_mut() else {
-            return;
-        };
-
-        self.pending_signal_samples.clear();
-        engine.drain_signal_monitor_samples(&mut self.pending_signal_samples);
-        if self.pending_signal_samples.is_empty() {
-            return;
-        }
-        self.signal_history
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .append(&self.pending_signal_samples);
-    }
-
-    fn clear_signal_history(&mut self) {
-        self.pending_signal_samples.clear();
-        self.signal_history
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-    }
-
-    fn show_signal_monitor(&self, context: &egui::Context) {
-        if !self.signal_monitor_open.load(Ordering::Acquire) {
-            return;
-        }
-
-        let open = Arc::clone(&self.signal_monitor_open);
-        let history = Arc::clone(&self.signal_history);
-        let metrics = self.engine.as_ref().map(RunningAudioEngine::metrics);
-        context.show_viewport_deferred(
-            signal_monitor_viewport_id(),
-            egui::ViewportBuilder::default()
-                .with_title(SIGNAL_MONITOR_TITLE)
-                .with_icon(app_icon())
-                .with_inner_size([SIGNAL_MONITOR_WIDTH, SIGNAL_MONITOR_HEIGHT])
-                .with_min_inner_size([560.0, 420.0])
-                .with_resizable(true),
-            move |ui, _class| {
-                let close_requested = ui.input(|input| input.viewport().close_requested());
-                if close_requested {
-                    open.store(false, Ordering::Release);
-                    // `Close` only queues another close request for a child
-                    // viewport. Hide it now; the next root pass stops declaring
-                    // the viewport and lets eframe destroy it.
-                    ui.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-                    return;
-                }
-
-                egui::CentralPanel::default().show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        signal_monitor::draw(ui, &history, metrics.as_ref());
-                    });
-                });
-                // During a restart this callback can temporarily have no engine.
-                // Keep repainting so the viewport adopts the next callback with
-                // fresh metrics after startup completes, even without mouse input.
-                ui.ctx().request_repaint_after(UI_REFRESH_INTERVAL);
-            },
-        );
+            .child(content)
     }
 }
 
-impl eframe::App for NoiseHoiHoiApp {
-    fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_engine_start();
-        self.sync_signal_monitor_state();
-        self.collect_signal_samples();
-        if self.engine.is_some() || self.engine_start.is_some() {
-            context.request_repaint_after(UI_REFRESH_INTERVAL);
-        }
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let context = ui.ctx().clone();
-        let content_size = self.draw_panel(ui);
-        self.resize_to_content(&context, content_size);
-
-        self.show_signal_monitor(&context);
-    }
-
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, SETTINGS_KEY, &self.settings);
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.signal_monitor_open.store(false, Ordering::Release);
-        self.stop();
-        self.finish_pending_start();
-    }
-}
-
-fn app_icon() -> Arc<egui::IconData> {
-    static ICON: std::sync::OnceLock<Arc<egui::IconData>> = std::sync::OnceLock::new();
-    Arc::clone(ICON.get_or_init(|| {
-        Arc::new(
-            eframe::icon_data::from_png_bytes(include_bytes!("../../../../assets/NoiseHoiHoi.png"))
-                .expect("the bundled NoiseHoiHoi icon must be a valid PNG"),
-        )
-    }))
-}
-
-fn signal_monitor_viewport_id() -> egui::ViewportId {
-    egui::ViewportId::from_hash_of(SIGNAL_MONITOR_VIEWPORT_ID)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn app_without_audio() -> NoiseHoiHoiApp {
-        NoiseHoiHoiApp {
-            settings: Settings::default(),
-            devices: Vec::new(),
-            processors: Vec::new(),
-            engine: None,
-            engine_start: None,
-            error: None,
-            notice: None,
-            content_size: None,
-            resize_attempts: 0,
-            signal_monitor_open: Arc::new(AtomicBool::new(false)),
-            signal_monitor_enabled: false,
-            signal_history: Arc::new(Mutex::new(SignalMonitorHistory::default())),
-            pending_signal_samples: Vec::new(),
-        }
-    }
-
-    fn measure(app: &mut NoiseHoiHoiApp, viewport_size: egui::Vec2) -> egui::Vec2 {
-        let context = egui::Context::default();
-        let mut content_size = egui::Vec2::ZERO;
-        let mut output = context.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport_size)),
-                ..Default::default()
-            },
-            |ui| content_size = app.draw_panel(ui),
-        );
-        output.textures_delta.clear();
-        content_size.ceil()
-    }
-
-    #[test]
-    fn content_size_does_not_include_unused_viewport_space() {
-        let mut app = app_without_audio();
-        let compact = measure(&mut app, egui::vec2(INITIAL_LAYOUT_WIDTH, 160.0));
-        let expanded = measure(&mut app, egui::vec2(1000.0, 800.0));
-        assert_eq!(compact, expanded);
-        assert!(compact.x < INITIAL_LAYOUT_WIDTH);
-        assert!(compact.y > 160.0);
-    }
-
-    #[test]
-    fn content_height_grows_and_shrinks_with_processor_controls() {
-        let mut app = app_without_audio();
-        let viewport = egui::vec2(INITIAL_LAYOUT_WIDTH, 600.0);
-        let pass_through = measure(&mut app, viewport);
-        app.settings.noise_reduction = true;
-        let reduction = measure(&mut app, viewport);
-        assert!(reduction.y > pass_through.y);
-        app.settings.noise_reduction = false;
-        assert_eq!(measure(&mut app, viewport), pass_through);
+fn level_fraction(peak: f32) -> f32 {
+    if peak > 0.0 {
+        ((20.0 * peak.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+    } else {
+        0.0
     }
 }

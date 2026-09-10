@@ -1,4 +1,3 @@
-#[cfg(any(target_os = "windows", target_os = "linux", test))]
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -29,49 +28,8 @@ impl AudioProcessor for PassThrough {
     fn process(&mut self, _mono_48khz: &mut [f32]) {}
 }
 
-/// `DeepFilterNet3` running on the selected compute processor.
-pub struct NoiseReduction {
-    inner: noise_net::NoiseNet,
-}
-
-impl NoiseReduction {
-    /// Load `DeepFilterNet3` on the selected compute processor and runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the requested pair or model cannot initialize.
-    pub fn new(
-        processor: &crate::ComputeProcessor,
-        runtime: crate::ComputeRuntime,
-    ) -> Result<Self, crate::EngineError> {
-        noise_net::NoiseNet::new(processor, runtime)
-            .map(|inner| Self { inner })
-            .map_err(|error| crate::EngineError::NoiseReduction(error.to_string()))
-    }
-}
-
-impl AudioProcessor for NoiseReduction {
-    fn process(&mut self, mono_48khz: &mut [f32]) {
-        let input: [f32; noise_net::FRAME_SIZE] = (&*mono_48khz)
-            .try_into()
-            .expect("the audio worker must honor NoiseNet's frame size");
-        let mut output = [0.0; noise_net::FRAME_SIZE];
-        self.inner.process_frame(&input, &mut output);
-        mono_48khz.copy_from_slice(&output);
-    }
-
-    fn frame_size(&self) -> Option<usize> {
-        Some(noise_net::FRAME_SIZE)
-    }
-
-    fn latency_samples(&self) -> usize {
-        noise_net::ALGORITHM_LATENCY_SAMPLES
-    }
-}
-
 /// Adapts variable resampler chunks to a processor's fixed frame size and
 /// delay-aligns the corresponding monitor input.
-#[cfg(any(target_os = "windows", target_os = "linux", test))]
 pub(crate) struct ProcessorPipeline<P> {
     processor: P,
     frame_size: Option<usize>,
@@ -81,7 +39,6 @@ pub(crate) struct ProcessorPipeline<P> {
     input_delay: VecDeque<f32>,
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", test))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ProcessReport {
     pub(crate) processed_samples: usize,
@@ -89,7 +46,6 @@ pub(crate) struct ProcessReport {
     pub(crate) deadline_misses: u64,
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", test))]
 impl ProcessReport {
     fn observe(&mut self, sample_count: usize, elapsed: Duration) {
         self.processed_samples += sample_count;
@@ -104,7 +60,6 @@ impl ProcessReport {
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", test))]
 impl<P: AudioProcessor> ProcessorPipeline<P> {
     pub(crate) fn new(processor: P) -> Result<Self, &'static str> {
         let frame_size = processor.frame_size();
@@ -161,7 +116,6 @@ impl<P: AudioProcessor> ProcessorPipeline<P> {
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", test))]
 fn align_input(delay: &mut VecDeque<f32>, input: &[f32], aligned: &mut Vec<f32>) {
     aligned.clear();
     aligned.reserve(input.len());

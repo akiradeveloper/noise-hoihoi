@@ -17,5 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
+noise-net-runtime = { path = "../../NoiseNet/crates/noise-net-runtime" }
+
 [lints]
 workspace = true

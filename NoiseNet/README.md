@@ -104,14 +104,14 @@ just test-noisenet-full
 To process a file outside NoiseHoiHoi:
 
 ```sh
-cargo run -p noise-net --release -- input-48khz.wav output.wav
+cargo run -p noise-net-cli --release -- input-48khz.wav output.wav
 ```
 
 List processors, then select one by its reported ID:
 
 ```sh
-cargo run -p noise-net --release -- --list-processors
-cargo run -p noise-net --release -- --processor PROCESSOR_ID input.wav output.wav
+cargo run -p noise-net-cli --release -- --list-processors
+cargo run -p noise-net-cli --release -- --processor PROCESSOR_ID input.wav output.wav
 ```
 
 The ignored WGPU suite runs on every real selectable adapter. It checks the
@@ -128,3 +128,12 @@ state, and removes the documented algorithmic delay from the output file.
 Burn upgrades are intentional: update the exact workspace dependency, convert
 the three ONNX graphs again, record the new Burnpack hashes, then regenerate the
 official reference and run the CPU and WGPU test profiles.
+
+## Platform boundary
+
+`noise-net` accepts an initialized Burn device through
+`NoiseNet::from_device(device, warm_up)`. Hardware enumeration and DX12/Vulkan
+selection live in `noise-net-runtime`; `NoiseNet::new_cpu()` remains available
+for standalone CPU tests. The `noise-net` executable is built by the
+`tools/noise-net-cli` package, which composes both libraries.
+See [architecture](../doc/architecture.md).

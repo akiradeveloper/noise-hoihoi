@@ -6,8 +6,9 @@ mod app;
 mod signal_monitor;
 
 #[cfg(any(windows, target_os = "linux"))]
-fn main() -> eframe::Result {
-    app::run()
+fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    app::run();
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]

@@ -6,7 +6,6 @@ pub struct SignalMonitorSample {
 }
 
 impl SignalMonitorSample {
-    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn new(input: f32, output: f32) -> Self {
         Self { input, output }
     }

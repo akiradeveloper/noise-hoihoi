@@ -14,7 +14,7 @@ use cpal::{
     SupportedStreamConfig,
     traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _},
 };
-use noise_hoihoi_engine::{
+use noise_hoihoi_platform::{
     PIPELINE_SAMPLE_RATE, VB_CABLE_PLAYBACK_ENDPOINT_NAME, VB_CABLE_RECORDING_ENDPOINT_NAME,
     is_vb_cable_playback_endpoint, is_vb_cable_recording_endpoint,
 };

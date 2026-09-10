@@ -5,6 +5,8 @@ RUN apt-get update \
         ca-certificates curl file libpulse-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev \
         libgl1-mesa-dev libegl1-mesa-dev libvulkan1 mesa-vulkan-drivers \
         libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+        libxkbcommon-x11-dev libfontconfig1-dev libasound2-dev libssl-dev \
+        libxcb1-dev libvulkan-dev clang cmake xdotool imagemagick \
         patchelf desktop-file-utils squashfs-tools shellcheck \
         pulseaudio pulseaudio-utils xvfb xauth \
     && rm -rf /var/lib/apt/lists/*

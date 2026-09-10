@@ -15,7 +15,7 @@ clap.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 cpal.workspace = true
-noise-hoihoi-engine = { path = "../../NoiseHoiHoi/crates/noise-hoihoi-engine" }
+noise-hoihoi-platform = { path = "../../NoiseHoiHoi/crates/noise-hoihoi-platform" }
 
 [lints]
 workspace = true

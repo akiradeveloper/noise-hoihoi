@@ -13,11 +13,13 @@ publish = false
 anyhow.workspace = true
 burn.workspace = true
 burn-store.workspace = true
-clap.workspace = true
 df.workspace = true
 hound.workspace = true
-noise-net-runtime = { path = "../noise-net-runtime" }
 thiserror.workspace = true
+
+[dev-dependencies]
+clap.workspace = true
+noise-net-runtime = { path = "../noise-net-runtime" }
 
 [lints]
 workspace = true

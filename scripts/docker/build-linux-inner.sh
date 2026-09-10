@@ -22,13 +22,14 @@ trap cleanup EXIT
 [[ "$(uname -m)" == x86_64 ]]
 mkdir -p "$cache" "$repository_root/out/linux"
 shellcheck "$repository_root"/scripts/docker/*linux*.sh "$repository_root/scripts/docker/collect-rust-licenses.sh" "$repository_root/packaging/linux/AppRun"
+python3 "$repository_root/scripts/check-architecture.py"
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo build --release --locked -p noise-hoihoi-app
-cargo test --release --locked -p noise-hoihoi-engine -p noise-hoihoi-app
+cargo test --release --locked -p noise-hoihoi-engine -p noise-hoihoi-session -p noise-hoihoi-platform -p noise-hoihoi-app
 bash "$repository_root/scripts/docker/test-linux-audio.sh" pulseaudio
 bash "$repository_root/scripts/docker/test-linux-audio.sh" pipewire
-RUSTDOCFLAGS="-D warnings" cargo doc --locked -p noise-hoihoi-engine -p noise-hoihoi-app --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --locked -p noise-hoihoi-engine -p noise-hoihoi-session -p noise-hoihoi-platform -p noise-hoihoi-app --no-deps
 
 fetch_tool() {
     local name="$1" version="$2" checksum="$3" repository="$4"
@@ -48,7 +49,7 @@ rm -rf -- "$stage"
 mkdir -p "$stage/usr/bin" "$stage/licenses"
 cp "$CARGO_TARGET_DIR/release/noise-hoihoi-app" "$stage/usr/bin/"
 # GL/EGL/Vulkan and vendor drivers remain supplied by the host. Explicitly
-# bundle the dynamically loaded window-system libraries used by winit.
+# bundle the dynamically loaded window-system libraries used by GPUI.
 "$cache/linuxdeploy/squashfs-root/AppRun" --appdir "$stage" \
     --executable "$stage/usr/bin/noise-hoihoi-app" \
     --desktop-file "$repository_root/packaging/linux/NoiseHoiHoi.desktop" \

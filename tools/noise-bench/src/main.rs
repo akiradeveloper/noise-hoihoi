@@ -1,3 +1,4 @@
+use noise_net_runtime::{ComputeRuntime, create_device, processors};
 mod audio;
 mod metrics;
 
@@ -505,12 +506,15 @@ fn run(
 ) -> Result<()> {
     let suite = load_suite(suite_path)?;
     let dir = suite_path.parent().context("suite has no parent")?;
-    let processors = noise_net::processors();
+    let processors = processors();
     let processor = processors
         .iter()
         .find(|p| p.id() == processor_id)
         .context("processor unavailable")?;
-    let mut net = NoiseNet::new(processor, processor.default_runtime())?;
+    let mut net = NoiseNet::from_device(
+        create_device(processor, processor.default_runtime())?,
+        processor.default_runtime() == ComputeRuntime::Wgpu,
+    )?;
     fs::create_dir(out).context("run directory must not already exist")?;
     let mut times = vec![];
     if continuous {

@@ -23,24 +23,24 @@ const PROCESSING_CHUNK_MS: usize = 10;
 const MAX_DRIFT_CORRECTION: f64 = 0.002;
 const DRIFT_GAIN_PER_FRAME: f64 = 0.000_001;
 
-pub(super) struct WorkerConfig {
+pub(crate) struct WorkerConfig {
     pub input_rate: u32,
     pub output_capacity: usize,
     pub target_output_frames: usize,
 }
 
-pub(super) struct SignalMonitorWriter {
+pub(crate) struct SignalMonitorWriter {
     producer: Producer<SignalMonitorSample>,
     enabled: Arc<AtomicBool>,
 }
 
 impl SignalMonitorWriter {
-    pub(super) fn new(producer: Producer<SignalMonitorSample>, enabled: Arc<AtomicBool>) -> Self {
+    pub(crate) fn new(producer: Producer<SignalMonitorSample>, enabled: Arc<AtomicBool>) -> Self {
         Self { producer, enabled }
     }
 }
 
-pub(super) fn spawn_worker<P: AudioProcessor>(
+pub(crate) fn spawn_worker<P: AudioProcessor>(
     input: Consumer<f32>,
     output: Producer<f32>,
     processor: P,
@@ -206,11 +206,4 @@ fn publish(
         metrics.add_dropped_signal_monitor_frames(dropped_frames);
     }
     Ok(())
-}
-
-#[cfg(windows)]
-pub(super) fn stop_worker(stop: &AtomicBool, worker: JoinHandle<()>) {
-    stop.store(true, Ordering::Release);
-    worker.thread().unpark();
-    let _ = worker.join();
 }
