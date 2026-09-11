@@ -1,4 +1,6 @@
 //! Application state without GPUI, native audio APIs, or GPU discovery dependencies.
+pub mod performance;
+
 use noise_hoihoi_engine::{
     AudioDevice, EngineConfig, EngineError, EngineMetrics, RunningAudioEngine, SignalMonitorSample,
 };
@@ -186,7 +188,8 @@ impl<B: SessionBackend> Session<B> {
             .map(|processor| processor.id().to_owned());
         if missing_selection.is_some() {
             self.notice = Some(
-                "The selected processor is no longer available; using the CPU instead.".to_owned(),
+                "The selected processor is no longer available; select an available processor."
+                    .to_owned(),
             );
         }
     }

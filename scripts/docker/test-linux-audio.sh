@@ -9,6 +9,11 @@ export XDG_RUNTIME_DIR
 XDG_RUNTIME_DIR="$(mktemp -d)"
 export XDG_CONFIG_HOME="$XDG_RUNTIME_DIR/config"
 export NOISE_HOIHOI_AUDIO_TEST=1
+if [[ -z "${NOISE_IREE_LIBRARY:-}" ]]; then
+    iree_bundle=/work/out/linux/iree-test-runtime
+    bash /work/scripts/build-iree.sh linux "$iree_bundle"
+    export NOISE_IREE_LIBRARY="$iree_bundle/iree/libnoise_iree.so"
+fi
 server_pids=()
 cleanup() {
     local status=$?

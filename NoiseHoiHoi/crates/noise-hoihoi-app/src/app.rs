@@ -1,6 +1,6 @@
 use std::{
     sync::{Arc, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::signal_monitor::{self, SignalMonitor, SignalMonitorHistory};
@@ -11,13 +11,17 @@ use gpui_kit::component::{
     switch::Switch,
 };
 use gpui_kit::{
-    App, AppContext as _, Bounds, Context, Entity, Image, ImageFormat, IntoElement, ParentElement,
-    Render, SharedString, Styled, Subscription, Task, TitlebarOptions, Window, WindowBounds,
-    WindowDecorations, WindowHandle, WindowOptions, div, img, prelude::*, px, relative, size,
+    App, AppContext as _, Bounds, ClipboardItem, Context, Entity, Image, ImageFormat, IntoElement,
+    ParentElement, Render, SharedString, Styled, Subscription, Task, TitlebarOptions, Window,
+    WindowBounds, WindowDecorations, WindowHandle, WindowOptions, div, img, prelude::*, px,
+    relative, size,
 };
 use noise_hoihoi_engine::{EngineMetrics, EngineState, SignalMonitorSample};
 use noise_hoihoi_platform::NativeBackend;
-use noise_hoihoi_session::Session;
+use noise_hoihoi_session::{
+    Session,
+    performance::{PerformanceCheck, Verdict},
+};
 
 const UI_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
 const APP_ICON: &[u8] = include_bytes!("../../../../assets/NoiseHoiHoi.png");
@@ -102,6 +106,7 @@ struct NoiseHoiHoiApp {
     signal_history: SignalMonitorHistory,
     pending_signal_samples: Vec<SignalMonitorSample>,
     shutting_down: bool,
+    performance: PerformanceCheck,
     subscriptions: Vec<Subscription>,
     refresh: Option<Task<()>>,
 }
@@ -119,6 +124,7 @@ impl NoiseHoiHoiApp {
             signal_history: SignalMonitorHistory::default(),
             pending_signal_samples: Vec::new(),
             shutting_down: false,
+            performance: PerformanceCheck::default(),
             subscriptions: Vec::new(),
             refresh: None,
         };
@@ -208,10 +214,11 @@ impl NoiseHoiHoiApp {
     }
 
     fn busy(&self) -> bool {
-        self.session.busy() || self.shutting_down
+        self.session.busy() || self.shutting_down || self.performance.is_running()
     }
 
     fn apply_settings(&mut self, cx: &mut Context<Self>) {
+        self.performance.clear();
         self.session.apply_settings();
         self.signal_history.clear();
         cx.notify();
@@ -220,6 +227,11 @@ impl NoiseHoiHoiApp {
     fn tick(&mut self, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
+        }
+        let was_checking = self.performance.is_running();
+        self.performance.poll(Instant::now(), self.metrics());
+        if was_checking {
+            cx.notify();
         }
         let was_starting = self.session.starting();
         self.session.poll_engine_start();
@@ -282,11 +294,71 @@ impl NoiseHoiHoiApp {
         cx.notify();
     }
 
+    fn check_performance(&mut self, cx: &mut Context<Self>) {
+        if self.performance.is_running() {
+            self.performance.clear();
+        } else if !self.busy()
+            && self.session.settings.noise_reduction
+            && let Some(processor) = self.session.selected_processor()
+        {
+            let combination = processor.name().to_owned();
+            self.performance
+                .start(Instant::now(), self.metrics(), combination);
+        }
+        cx.notify();
+    }
+
+    fn render_performance(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let checking = self.performance.is_running();
+        let can_start = !self.busy()
+            && self.session.settings.noise_reduction
+            && self.session.selected_processor().is_some()
+            && self.metrics().state == EngineState::Running;
+        let progress = self.performance.remaining(Instant::now()).map(|remaining| {
+            format!(
+                "Observing live audio… {} s remaining",
+                remaining.as_secs().saturating_add(1)
+            )
+        });
+        let report = self.performance.report();
+        div().v_flex().gap_2().border_t_1().border_color(cx.theme().border).pt_4()
+            .child(Button::new("performance-check")
+                .label(if checking { "Cancel check" } else { "Check performance (10 s)" })
+                .w_full()
+                .disabled(self.shutting_down || (!checking && !can_start))
+                .on_click(cx.listener(|app, _, _, cx| app.check_performance(cx))))
+            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                if self.session.settings.noise_reduction {
+                    "Checks the active microphone and processor under the current load. Audio continues normally."
+                } else {
+                    "Enable noise reduction and start the microphone to check performance."
+                }))
+            .when_some(progress, |panel, text| panel.child(div().text_xs().child(text)))
+            .when_some(report, |panel, report| {
+                let color = match report.verdict {
+                    Verdict::Headroom => cx.theme().success,
+                    Verdict::Limited | Verdict::InsufficientData => cx.theme().warning,
+                    Verdict::Interruptions | Verdict::TooSlow => cx.theme().danger,
+                };
+                let text = report.text();
+                panel
+                    .child(div().font_semibold().text_color(color).child(report.title()))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                        .child(report.combination.clone()))
+                    .child(div().text_xs().child(report.details()))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                        .child("Performance at the current load; noise-removal quality is not assessed."))
+                    .child(Button::new("copy-performance-report").label("Copy result")
+                        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))))
+            })
+    }
+
     fn shutdown(&mut self, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
         }
         self.shutting_down = true;
+        self.performance.clear();
         self.refresh = None;
         if let Some(handle) = self.monitor.take() {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
@@ -338,10 +410,6 @@ impl Render for NoiseHoiHoiApp {
         let busy = self.busy();
         let can_retry =
             !busy && (!self.session.has_engine() || metrics.state == EngineState::Faulted);
-        let runtime = self
-            .session
-            .selected_processor()
-            .map(|processor| processor.default_runtime().to_string());
         let error = self.runtime_error();
         let content = div()
             .id("main-scroll")
@@ -425,27 +493,15 @@ impl Render for NoiseHoiHoiApp {
                             ),
                     )
                     .when(self.session.settings.noise_reduction, |panel| {
-                        panel
-                            .child(
-                                div().v_flex().gap_2().child("Processor").child(
-                                    Select::new(&self.processor_select)
-                                        .w_full()
-                                        .disabled(busy)
-                                        .placeholder("Select a processor")
-                                        .accessibility_label("Compute processor"),
-                                ),
-                            )
-                            .when_some(runtime, |panel, runtime| {
-                                panel.child(
-                                    div()
-                                        .h_flex()
-                                        .justify_between()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("Runtime (automatic)")
-                                        .child(runtime),
-                                )
-                            })
+                        panel.child(
+                            div().v_flex().gap_2().child("Processor").child(
+                                Select::new(&self.processor_select)
+                                    .w_full()
+                                    .disabled(busy)
+                                    .placeholder("Select a processor")
+                                    .accessibility_label("Compute processor"),
+                            ),
+                        )
                     })
                     .when(!self.session.settings.noise_reduction, |panel| {
                         panel.child(
@@ -479,6 +535,7 @@ impl Render for NoiseHoiHoiApp {
                             .when(can_retry, |row| {
                                 row.child(Button::new("retry").label("Retry").on_click(
                                     cx.listener(|app, _, window, cx| {
+                                        app.performance.clear();
                                         app.session.refresh_devices();
                                         app.session.refresh_processors();
                                         app.sync_choices(window, cx);
@@ -494,12 +551,20 @@ impl Render for NoiseHoiHoiApp {
                     .when_some(self.session.notice.clone(), |panel, notice| {
                         panel.child(div().text_xs().text_color(cx.theme().warning).child(notice))
                     })
+                    .child(self.render_performance(cx))
                     .child(
-                        Button::new("signal-monitor")
-                            .label("Signal Monitor")
+                        div()
                             .w_full()
-                            .disabled(self.shutting_down)
-                            .on_click(cx.listener(|app, _, _, cx| app.open_monitor(cx))),
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .pt_4()
+                            .child(
+                                Button::new("signal-monitor")
+                                    .label("Signal Monitor")
+                                    .w_full()
+                                    .disabled(self.shutting_down)
+                                    .on_click(cx.listener(|app, _, _, cx| app.open_monitor(cx))),
+                            ),
                     ),
             );
         div()

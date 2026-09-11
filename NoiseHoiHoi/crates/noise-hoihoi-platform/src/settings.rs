@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Write as _, path::Path};
+use std::{io::Write as _, path::Path};
 
 use directories::ProjectDirs;
 use noise_hoihoi_session::Settings;
@@ -27,14 +27,6 @@ impl SettingsFile {
         if json.exists() {
             return Ok(serde_json::from_slice(&std::fs::read(json)?)?);
         }
-        // eframe stored a RON-encoded settings value inside its RON key/value map.
-        let legacy = directory.join("app.ron");
-        if legacy.exists() {
-            let values: HashMap<String, String> = ron::from_str(&std::fs::read_to_string(legacy)?)?;
-            if let Some(value) = values.get("noise-hoihoi-settings") {
-                return Ok(ron::from_str(value)?);
-            }
-        }
         Ok(Settings::default())
     }
 
@@ -59,16 +51,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migrates_egui_settings_and_prefers_subsequent_gpui_settings() {
+    fn saves_and_replaces_settings() {
         let directory = tempfile::tempdir().unwrap();
         let mut settings = Settings {
             input_device_id: Some("microphone-id".into()),
             processor_id: Some("gpu-id".into()),
             noise_reduction: true,
         };
-        let values = HashMap::from([("noise-hoihoi-settings", ron::to_string(&settings).unwrap())]);
-        let legacy = ron::to_string(&values).unwrap();
-        std::fs::write(directory.path().join("app.ron"), &legacy).unwrap();
+        assert_eq!(
+            SettingsFile::load_from(directory.path()).unwrap(),
+            Settings::default()
+        );
+        SettingsFile::save_to(&settings, directory.path()).unwrap();
         assert_eq!(SettingsFile::load_from(directory.path()).unwrap(), settings);
         settings.noise_reduction = false;
         SettingsFile::save_to(&settings, directory.path()).unwrap();
@@ -76,10 +70,6 @@ mod tests {
         settings.processor_id = None;
         SettingsFile::save_to(&settings, directory.path()).unwrap();
         assert_eq!(SettingsFile::load_from(directory.path()).unwrap(), settings);
-        assert_eq!(
-            std::fs::read_to_string(directory.path().join("app.ron")).unwrap(),
-            legacy
-        );
     }
 
     #[test]

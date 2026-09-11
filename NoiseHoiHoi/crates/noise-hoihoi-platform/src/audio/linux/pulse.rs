@@ -134,7 +134,7 @@ impl Connection {
 
     pub fn create_microphone(&mut self) -> Result<(), EngineError> {
         // The session lock is already held. Recover only modules with our exact
-        // type and arguments, including modules from the initial v0.6 build.
+        // type and arguments.
         self.recover_abandoned_modules()?;
         // Refuse endpoints that belong to any other configuration.
         let occupied = Rc::new(RefCell::new(false));

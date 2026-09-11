@@ -1,0 +1,16 @@
+[package]
+name = "noise-net-iree"
+description = "Streaming noise reduction with IREE CPU and Vulkan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+realfft = "=3.5.0"
+libloading = "0.8.9"
+
+[lints]
+workspace = true

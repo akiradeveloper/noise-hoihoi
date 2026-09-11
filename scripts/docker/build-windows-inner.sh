@@ -162,10 +162,11 @@ echo "[4/6] Assembling the Windows package"
 rm -rf -- "$stage"
 mkdir -p "$stage/licenses" "$stage/third-party/vb-cable"
 cp -- "$app_binary" "$stage/$app_filename"
+bash "$repository_root/scripts/build-iree.sh" windows "$stage"
 cp -a -- "$vbcable_package/." "$stage/third-party/vb-cable/"
 cp -- "$repository_root/LICENSE" "$stage/licenses/LICENSE-MIT"
 cp -- "$repository_root/THIRD_PARTY_NOTICES.md" "$stage/licenses/"
-cp -- "$repository_root/packaging/licenses/DeepFilterNet-LICENSE-MIT.txt" "$stage/licenses/"
+cp -- "$repository_root/packaging/licenses/DPDFNet-LICENSE-APACHE-2.0.txt" "$stage/licenses/"
 cp -- "$repository_root/packaging/windows/VB-CABLE-NOTICE.txt" "$stage/licenses/"
 cp -- /usr/share/doc/nsis/copyright "$stage/licenses/NSIS-copyright"
 cp -- /usr/share/common-licenses/Apache-2.0 "$stage/licenses/Apache-2.0.txt"
@@ -182,6 +183,8 @@ Product: NoiseHoiHoi $product_version
 Target: Windows x64 (x86_64-pc-windows-gnu)
 Rust: $(rustc --version)
 VB-CABLE archive SHA-256: $vbcable_sha256
+Inference: IREE 3.12.0rc20260910 (CPU and Vulkan GPU)
+Native library manifest: iree/PROVENANCE.md
 Source date epoch: $SOURCE_DATE_EPOCH
 BUILD_INFO
 
@@ -228,9 +231,13 @@ installer_listing="$(7z l "$installer")"
 for required_payload in \
     "$app_filename" \
     BUILD-INFO.txt \
+    iree/noise_iree.dll \
+    iree/IREE-LICENSE.txt \
+    iree/IREE-flatcc-LICENSE.txt \
+    iree/IREE-Vulkan-Headers-LICENSE.txt \
     licenses/Apache-2.0.txt \
     licenses/BSL-1.0.txt \
-    licenses/DeepFilterNet-LICENSE-MIT.txt \
+    licenses/DPDFNet-LICENSE-APACHE-2.0.txt \
     licenses/RUST-DEPENDENCIES.txt \
     licenses/VB-CABLE-NOTICE.txt \
     third-party/vb-cable/VBCABLE_Setup_x64.exe; do
@@ -241,4 +248,5 @@ for required_payload in \
 done
 
 sha256sum "$installer" "$smoke_output" "$app_output"
+python3 "$repository_root/scripts/prune-builds.py" windows "$release_label" "$repository_root/out"
 printf '%s\n' "$installer" "$smoke_output" "$app_output"

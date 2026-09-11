@@ -1,0 +1,46 @@
+#version 450
+layout(local_size_x = 256) in;
+layout(set=0,binding=0) readonly buffer P { float p[]; };
+layout(set=0,binding=1) readonly buffer R { float r[]; };
+layout(set=0,binding=2) readonly buffer B { float b[]; };
+layout(set=0,binding=3) readonly buffer H { float h0[]; };
+layout(set=0,binding=4) writeonly buffer Y { float y[]; };
+layout(push_constant) uniform Args { uint steps; };
+shared float hidden[64];
+shared float sums[768];
+void main() {
+    uint id = gl_LocalInvocationID.x;
+    uint dir = gl_WorkGroupID.x;
+    uint row = id / 4, lane = id % 4;
+    if (lane==0) hidden[row] = h0[dir*64+row];
+    barrier();
+    for (uint t=0; t<steps; ++t) {
+        uint pos = dir==0 ? t : steps-1-t;
+        float az=0.0, ar=0.0, an=0.0;
+        for (uint k=lane; k<64; k+=4) {
+            float h=hidden[k];
+            az += h*r[(dir*64+k)*192+row];
+            ar += h*r[(dir*64+k)*192+64+row];
+            an += h*r[(dir*64+k)*192+128+row];
+        }
+        sums[id]=az; sums[256+id]=ar; sums[512+id]=an;
+        barrier();
+        if (lane==0) {
+            uint base=row*4;
+            float rz=b[dir*384+192+row];
+            float rr=b[dir*384+256+row];
+            float rn=b[dir*384+320+row];
+            for (uint k=0;k<4;++k) {
+                rz+=sums[base+k]; rr+=sums[256+base+k]; rn+=sums[512+base+k];
+            }
+            uint off=(dir*steps+pos)*192+row;
+            float z=1.0/(1.0+exp(-(p[off]+rz)));
+            float reset=1.0/(1.0+exp(-(p[off+64]+rr)));
+            float candidate=tanh(p[off+128]+reset*rn);
+            float result=(1.0-z)*candidate+z*hidden[row];
+            hidden[row]=result;
+            y[(pos*2+dir)*64+row]=result;
+        }
+        barrier();
+    }
+}

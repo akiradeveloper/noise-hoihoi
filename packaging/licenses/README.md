@@ -3,7 +3,7 @@
 Some upstream crate archives omit license files. The packaging script keeps
 these texts together with each crate's package metadata and attribution.
 
-Added for the v0.7 GPUI dependency graph:
+Supplements for the GPUI dependency graph:
 
 - `harfrust-LICENSE-MIT.txt`: upstream LICENSE at harfrust 0.5.2's published
   revision, https://github.com/harfbuzz/harfrust/blob/efdae3142ab76a2f1524d72cff9e3dfdc5afd7ca/LICENSE.

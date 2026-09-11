@@ -12,10 +12,11 @@ use std::{
 
 struct HalfGain(Arc<AtomicBool>);
 impl AudioProcessor for HalfGain {
-    fn process(&mut self, samples: &mut [f32]) {
+    fn process(&mut self, samples: &mut [f32]) -> Result<(), String> {
         for sample in samples {
             *sample *= 0.5;
         }
+        Ok(())
     }
 }
 impl Drop for HalfGain {

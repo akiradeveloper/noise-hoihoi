@@ -10,9 +10,9 @@ metadata = json.loads(subprocess.check_output(
 ))
 # Changes to these boundaries must be an explicit architectural decision.
 allowed = {
+    "noise-net-iree": {"anyhow", "realfft", "libloading"},
     "noise-hoihoi-engine": {"thiserror", "rtrb", "rubato"},
     "noise-hoihoi-session": {"noise-hoihoi-engine", "serde"},
-    "noise-net": {"anyhow", "burn", "burn-store", "deep_filter", "hound", "thiserror"},
 }
 checked = set()
 for package in metadata["packages"]:

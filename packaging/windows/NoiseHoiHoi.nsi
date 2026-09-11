@@ -126,6 +126,12 @@ Section "${PRODUCT_NAME}" Install
     SectionIn RO
     StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCT_NAME}"
     SetOutPath "$INSTDIR"
+    ; Replace application-owned inference payloads from earlier installations.
+    RMDir /r "$INSTDIR\ort"
+    RMDir /r "$INSTDIR\licenses"
+    Delete "$INSTDIR\DirectML.dll"
+    Delete "$INSTDIR\dxcompiler.dll"
+    Delete "$INSTDIR\dxil.dll"
     File /r "${STAGE_DIR}/*"
 
     ${If} $VBCablePreexisting == "1"
@@ -176,7 +182,7 @@ vbcable_ready:
     WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoRepair" 1
     DeleteRegKey HKLM "Software\NoiseHoiHoi"
 
-    ; Remove shortcuts created by early v0.1 installers for only the current
+    ; Remove existing per-user shortcuts for only the current
     ; user, then install the machine-wide shortcuts used by this package.
     SetShellVarContext current
     !insertmacro RemoveStartMenuShortcuts

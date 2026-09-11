@@ -44,6 +44,10 @@ pub struct EngineMetrics {
     pub max_processing_time_us: u64,
     /// Processor calls that exceeded the duration of their audio block.
     pub processing_deadline_misses: u64,
+    /// Number of individual processor calls (not audio samples).
+    pub processing_calls: u64,
+    /// Sum of individual processor durations, excluding queues and resampling.
+    pub processing_total_time_us: u64,
     pub buffered_output_frames: u32,
     /// Signal-monitor frames dropped without affecting the audio route.
     pub dropped_signal_monitor_frames: u64,
@@ -61,6 +65,8 @@ pub struct SharedMetrics {
     processed_frames: AtomicU64,
     max_processing_time_us: AtomicU64,
     processing_deadline_misses: AtomicU64,
+    processing_calls: AtomicU64,
+    processing_total_time_us: AtomicU64,
     buffered_output_frames: AtomicU32,
     dropped_signal_monitor_frames: AtomicU64,
     fault_message: Mutex<Option<String>>,
@@ -79,6 +85,8 @@ impl Default for SharedMetrics {
             processed_frames: AtomicU64::new(0),
             max_processing_time_us: AtomicU64::new(0),
             processing_deadline_misses: AtomicU64::new(0),
+            processing_calls: AtomicU64::new(0),
+            processing_total_time_us: AtomicU64::new(0),
             buffered_output_frames: AtomicU32::new(0),
             dropped_signal_monitor_frames: AtomicU64::new(0),
             fault_message: Mutex::new(None),
@@ -130,8 +138,19 @@ impl SharedMetrics {
         self.processed_frames.fetch_add(count, Ordering::Relaxed);
     }
 
-    pub fn observe_processing(&self, elapsed: std::time::Duration, deadline_misses: u64) {
+    pub fn observe_processing(
+        &self,
+        elapsed: std::time::Duration,
+        deadline_misses: u64,
+        calls: u64,
+        total: std::time::Duration,
+    ) {
         let microseconds = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.processing_total_time_us.fetch_add(
+            u64::try_from(total.as_micros()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        self.processing_calls.fetch_add(calls, Ordering::Relaxed);
         self.max_processing_time_us
             .fetch_max(microseconds, Ordering::Relaxed);
         self.processing_deadline_misses
@@ -160,6 +179,8 @@ impl SharedMetrics {
             processed_frames: self.processed_frames.load(Ordering::Relaxed),
             max_processing_time_us: self.max_processing_time_us.load(Ordering::Relaxed),
             processing_deadline_misses: self.processing_deadline_misses.load(Ordering::Relaxed),
+            processing_calls: self.processing_calls.load(Ordering::Relaxed),
+            processing_total_time_us: self.processing_total_time_us.load(Ordering::Relaxed),
             buffered_output_frames: self.buffered_output_frames.load(Ordering::Relaxed),
             dropped_signal_monitor_frames: self
                 .dropped_signal_monitor_frames
@@ -204,8 +225,18 @@ mod tests {
         shared.add_input_discontinuity();
         shared.add_output_discontinuity();
         shared.add_processed_frames(480);
-        shared.observe_processing(std::time::Duration::from_micros(750), 2);
-        shared.observe_processing(std::time::Duration::from_micros(500), 0);
+        shared.observe_processing(
+            std::time::Duration::from_micros(750),
+            2,
+            2,
+            std::time::Duration::from_micros(1250),
+        );
+        shared.observe_processing(
+            std::time::Duration::from_micros(500),
+            0,
+            1,
+            std::time::Duration::from_micros(500),
+        );
         shared.set_buffered_output_frames(1_920);
         shared.add_dropped_signal_monitor_frames(4);
         shared.mark_stream_fault("output stream: device invalidated");
@@ -221,6 +252,8 @@ mod tests {
         assert_eq!(snapshot.processed_frames, 480);
         assert_eq!(snapshot.max_processing_time_us, 750);
         assert_eq!(snapshot.processing_deadline_misses, 2);
+        assert_eq!(snapshot.processing_calls, 3);
+        assert_eq!(snapshot.processing_total_time_us, 1750);
         assert_eq!(snapshot.buffered_output_frames, 1_920);
         assert_eq!(snapshot.dropped_signal_monitor_frames, 4);
         assert_eq!(

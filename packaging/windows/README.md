@@ -1,4 +1,4 @@
-# Windows v0.7 installer
+# Windows v0.8 installer
 
 Run the release build from a Linux host with Docker:
 
@@ -9,10 +9,22 @@ just build-windows
 It builds the Rust application with the optimized release profile and emits:
 
 ```text
-out/NoiseHoiHoi-v0.7-setup.exe
-out/NoiseHoiHoi-v0.7.exe
-out/NoiseHoiHoi-v0.7-audio-smoke.exe
+out/NoiseHoiHoi-v0.8-setup.exe
+out/NoiseHoiHoi-v0.8.exe
+out/NoiseHoiHoi-v0.8-audio-smoke.exe
 ```
+
+Each successful build replaces these files and removes older Windows releases,
+revision copies, and diagnostic bundles from `out/`. No revision archives are kept.
+
+The installer bundles IREE for CPU and Vulkan GPU inference. Physical GPUs use
+Vulkan UUIDs; only processor names appear in the UI. The native library lives
+under `iree`, with provenance and licenses. Both operating systems embed the
+same CPU and GPU model modules. Use the performance check on the intended hardware.
+
+`scripts/build-iree.sh` pins IREE and its native build dependencies.
+Python is not required. The plain application EXE requires its `iree` directory;
+use the installer for a complete installation.
 
 The build fetches the official base VB-CABLE Package 45 from VB-Audio, pins it
 to SHA-256
@@ -65,7 +77,7 @@ the environment variable with another non-negative Unix timestamp.
 
 ## GPUI cross-compilation
 
-v0.7 uses GPUI and gpui-component through gpui-kit 0.6.1. GPUI's DirectX
+v0.8 uses GPUI and gpui-component through gpui-kit 0.6.1. GPUI's DirectX
 shaders are compiled to optimized bytecode using the x64 compiler from
 Microsoft.Windows.SDK.CPP 10.0.26100.1 under Wine in the build container.
 The NuGet archive is pinned to SHA-256

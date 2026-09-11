@@ -1,0 +1,5 @@
+c60594890c2a191ad44c4113b1b2492fc999f5bb03cceb7baa72c3ac2ca218fa  NoiseNet/crates/noise-net-iree/model/dpdfnet8-cpu-avx2.vmfb
+b65967f95e669a0b4d3b0f2bf62c25a72d6bcaeefa033881050fd252dacb1f46  NoiseNet/crates/noise-net-iree/model/dpdfnet8-cpu.vmfb
+a5e681599ecb11cba78f94a5be6f21bbda920f6e4bd2a06e1b5e38cf9f30c034  NoiseNet/crates/noise-net-iree/model/dpdfnet8-norm.f32le
+7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631  NoiseNet/crates/noise-net-iree/model/dpdfnet8.onnx
+608107648ded282475db63d8001cd06bcd0c2e3d3c6ee3a0d6cba6c8c4c95176  NoiseNet/crates/noise-net-iree/model/dpdfnet8.vmfb

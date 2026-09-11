@@ -10,7 +10,7 @@ mkdir -p "$rust_license_root"
 while read -r package_name package_version _; do
     package_version="${package_version#v}"
     case "$package_name" in
-        noise-hoihoi-app | noise-hoihoi-engine | noise-hoihoi-session | noise-hoihoi-platform | noise-net | noise-net-runtime | noise-net-cli)
+        noise-hoihoi-app | noise-hoihoi-engine | noise-hoihoi-session | noise-hoihoi-platform | noise-net-iree)
             continue
             ;;
     esac

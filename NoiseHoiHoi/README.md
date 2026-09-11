@@ -3,13 +3,20 @@
 The application separates the GPUI / gpui-component view (`noise-hoihoi-app`),
 portable settings and lifecycle (`noise-hoihoi-session`), portable audio processing
 (`noise-hoihoi-engine`), and native audio/persistence adapters
-(`noise-hoihoi-platform`). See [architecture and test boundaries](../doc/architecture.md).
+(`noise-hoihoi-platform`).
 The engine and session can be tested without a display, microphone, audio server,
 or GPU using `cargo test -p noise-hoihoi-engine -p noise-hoihoi-session`.
 
-The engine runs either bit-exact pass-through or NoiseNet. CPU inference uses
-Flex; selecting a GPU exposes its WGPU runtime. Model and audio initialization
-run off the GUI thread, and GPU models are warmed before routing starts.
+The v0.8 application runs pass-through or the official DPDFNet-8 48 kHz model
+through `noise-net-iree`. CPU uses IREE local-sync; GPU uses IREE Vulkan on both
+Windows and Linux. Content delay is 50 ms, plus device/worker buffering.
+No speaker registration, voice recovery or gain adaptation is added.
+
+New installations default to CPU; available explicit processor selections are
+retained. Unavailable processor IDs fall back to CPU during settings resolution.
+Only processor names appear in the panel, diagnostics and copied reports.
+Model loading and warm-up run off the GUI thread before audio routing starts.
+Inference errors fault the route instead of publishing a failed frame.
 
 Microphone and processor lists are loaded at startup. Restart NoiseHoiHoi after
 connecting a new microphone or eGPU to update the available devices.
@@ -26,7 +33,30 @@ engine stops. Capture and playback use 48 kHz mono PCM with bounded buffers
 and the same processing worker as Windows. Wayland and X11 share the GPUI GUI.
 See [AppImage distribution](../packaging/linux/README.md) for usage and builds.
 
-## v0.7 GUI
+## Performance check
+
+With noise reduction running, **Check performance (10 s)** observes the active
+microphone route under the current system load. Audio continues; the check does
+not create another model or run competing inference. Use it while the usual
+game/streaming applications are running. **Cancel check** stops observation,
+and **Copy result** copies the processor name, timing and route counters.
+
+Results use only counter changes during the observation: mean processor-call
+time, calls exceeding the 10 ms block budget, dropped input frames, inserted
+silence frames, and stream discontinuities. Frame counts for dropped input and
+silence are audio frames, not 10 ms inference calls. The displayed mean includes
+the model's FFT/inference/synthesis and GPU synchronization; audio transport and
+resampling are reflected through the discontinuity/drop counters instead.
+
+The headroom indication requires at least 90% of the expected processing calls,
+no observed interruptions or deadline misses, and a mean at most 8 ms (20%
+nominal compute margin). A mean of 10 ms or more cannot sustain the stream.
+Insufficient data, a stopped/restarted route, or a fault cannot receive a passing
+result. Settings changes clear previous results. This checks current
+performance; it does not assess suppression quality or guarantee performance
+under future load. The existing Signal Monitor retains lifetime counters.
+
+## GUI
 
 The GPUI control panel uses Select and Switch components, follows the desktop
 light/dark appearance, and opens Signal Monitor in a separate native window.
@@ -35,8 +65,7 @@ rendering and NoiseNet compute device selection are independent.
 
 Settings are stored as `settings.json` in the application's data directory
 (`~/.local/share/noisehoihoi` on Linux, `%APPDATA%/NoiseHoiHoi/data` on Windows).
-When it does not exist, v0.7 reads v0.6's `app.ron` settings without modifying
-that file. Changes are saved with an atomic replacement.
+Missing settings use defaults. Changes are saved with an atomic replacement.
 
 Audio startup, reconfiguration, and shutdown run off the UI thread. The control
 panel and open monitor refresh at 20 Hz. Closing only the monitor disables

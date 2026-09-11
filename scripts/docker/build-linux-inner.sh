@@ -25,7 +25,12 @@ shellcheck "$repository_root"/scripts/docker/*linux*.sh "$repository_root/script
 python3 "$repository_root/scripts/check-architecture.py"
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
+bash "$repository_root/scripts/build-iree.sh" linux "$repository_root/out/linux/iree-test-runtime"
+export NOISE_IREE_LIBRARY="$repository_root/out/linux/iree-test-runtime/iree/libnoise_iree.so"
 cargo build --release --locked -p noise-hoihoi-app
+cargo test --release --locked -p noise-net-iree --lib
+cargo test --release --locked -p noise-net-iree --test streaming cpu_ -- --ignored
+cargo test --release --locked -p noise-hoihoi-platform --test inference selected_cpu -- --ignored
 cargo test --release --locked -p noise-hoihoi-engine -p noise-hoihoi-session -p noise-hoihoi-platform -p noise-hoihoi-app
 bash "$repository_root/scripts/docker/test-linux-audio.sh" pulseaudio
 bash "$repository_root/scripts/docker/test-linux-audio.sh" pipewire
@@ -48,6 +53,8 @@ fetch_tool appimagetool 1.9.1 ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa3
 rm -rf -- "$stage"
 mkdir -p "$stage/usr/bin" "$stage/licenses"
 cp "$CARGO_TARGET_DIR/release/noise-hoihoi-app" "$stage/usr/bin/"
+mkdir -p "$stage/usr/bin/iree"
+cp -a "$repository_root/out/linux/iree-test-runtime/iree/." "$stage/usr/bin/iree/"
 # GL/EGL/Vulkan and vendor drivers remain supplied by the host. Explicitly
 # bundle the dynamically loaded window-system libraries used by GPUI.
 "$cache/linuxdeploy/squashfs-root/AppRun" --appdir "$stage" \
@@ -91,4 +98,5 @@ head -c "$("$runtime_archive" --appimage-offset)" "$runtime_archive" > "$cache/r
 "$cache/appimagetool/squashfs-root/AppRun" --runtime-file "$cache/runtime-x86_64" --no-appstream "$stage" "$artifact.building"
 mv -f -- "$artifact.building" "$artifact"
 (cd "$repository_root/out" && sha256sum "$(basename -- "$artifact")" > "$(basename -- "$artifact").sha256")
+python3 "$repository_root/scripts/prune-builds.py" linux "v${version%.*}" "$repository_root/out"
 echo "Built $artifact"

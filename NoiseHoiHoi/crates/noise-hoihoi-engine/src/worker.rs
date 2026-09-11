@@ -174,8 +174,12 @@ impl<P: AudioProcessor> Worker<P> {
         })?;
         self.metrics
             .add_processed_frames(u64::try_from(report.processed_samples).unwrap_or(u64::MAX));
-        self.metrics
-            .observe_processing(report.max_processing_time, report.deadline_misses);
+        self.metrics.observe_processing(
+            report.max_processing_time,
+            report.deadline_misses,
+            report.calls,
+            report.total_processing_time,
+        );
         Ok(())
     }
 }

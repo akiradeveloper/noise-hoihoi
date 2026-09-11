@@ -1,20 +1,17 @@
 [workspace]
 members = [
-    "NoiseNet/crates/noise-net",
-    "NoiseNet/crates/noise-net-runtime",
+    "NoiseNet/crates/noise-net-iree",
     "NoiseHoiHoi/crates/noise-hoihoi-app",
     "NoiseHoiHoi/crates/noise-hoihoi-engine",
     "NoiseHoiHoi/crates/noise-hoihoi-platform",
     "NoiseHoiHoi/crates/noise-hoihoi-session",
     "tools/audio-smoke",
-    "tools/noise-bench",
-    "tools/noise-net-cli",
 ]
 exclude = ["vendor/gpui-pre-windows"]
 resolver = "3"
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Akira Hayakawa"]
@@ -23,23 +20,15 @@ repository = "https://github.com/akiradeveloper/noise-hoihoi"
 
 [workspace.dependencies]
 anyhow = "1.0.99"
-burn = { version = "=0.22.0-pre.3", default-features = false, features = ["flex", "rayon", "simd", "std", "store", "wgpu"] }
-burn-wgpu = { version = "=0.22.0-pre.3", default-features = false, features = ["std"] }
-burn-store = { version = "=0.22.0-pre.3", default-features = false, features = ["std"] }
 clap = { version = "4.5.47", features = ["derive"] }
 cpal = "0.18.2"
-df = { package = "deep_filter", version = "=0.2.5", default-features = false }
 gpui-kit = "=0.6.1"
-hound = "3.5.1"
-pollster = "0.4.0"
 rtrb = "0.4.0"
 rubato = { version = "5.0.0", default-features = false }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.151"
-sha2 = "0.10.9"
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 thiserror = "2.0.16"
-wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

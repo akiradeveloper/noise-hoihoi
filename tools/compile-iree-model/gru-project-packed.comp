@@ -1,0 +1,17 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(set=0,binding=0) readonly buffer X { float x[]; };
+layout(set=0,binding=1) readonly buffer W { float w[]; };
+layout(set=0,binding=2) readonly buffer B { float b[]; };
+layout(set=0,binding=3) writeonly buffer P { float p[]; };
+layout(push_constant) uniform Args { uint steps; };
+void main() {
+    uint row = gl_GlobalInvocationID.x;
+    if (row >= 2 * steps * 192) return;
+    uint col = row % 192;
+    uint t = (row / 192) % steps;
+    uint dir = row / (192 * steps);
+    float acc = b[dir * 384 + col];
+    for (uint k=0; k<64; ++k) acc += x[t*64+k] * w[(dir*64+k)*192+col];
+    p[row] = acc;
+}

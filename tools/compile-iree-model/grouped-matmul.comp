@@ -1,0 +1,14 @@
+#version 450
+layout(local_size_x=64) in;
+layout(set=0,binding=0) readonly buffer X { float x[]; };
+layout(set=0,binding=1) readonly buffer W { float w[]; };
+layout(set=0,binding=2) writeonly buffer Y { float y[]; };
+layout(push_constant) uniform Args { uint ksize; uint nsize; uint total; };
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    if (i>=total) return;
+    uint group=i/nsize, col=i%nsize;
+    float sum=0.0;
+    for (uint k=0;k<ksize;++k) sum+=x[group*ksize+k]*w[(group*ksize+k)*nsize+col];
+    y[i]=sum;
+}

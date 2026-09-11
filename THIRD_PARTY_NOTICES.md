@@ -1,16 +1,17 @@
 # Third-party notices
 
-## DeepFilterNet3
+## DPDFNet-8
 
-NoiseNet embeds model weights converted from the official DeepFilterNet3 ONNX
-archive and contains generated graph code based on that model. DeepFilterNet is
-Copyright (c) 2021 Hendrik Schröter and is dual-licensed under MIT or
-Apache-2.0; NoiseHoiHoi uses the MIT option.
+NoiseHoiHoi embeds the official DPDFNet-8 FP32 weights compiled for IREE CPU
+and Vulkan GPU. The weights and model equations are unchanged. The streaming
+front end uses a 960-point Vorbis-window STFT and overlap-add.
 
-Origin: https://github.com/Rikorose/DeepFilterNet
+Origin: https://github.com/ceva-ip/DPDFNet
+Weights: https://huggingface.co/Ceva-IP/DPDFNet
 
-The selected license is installed as
-`licenses/DeepFilterNet-LICENSE-MIT.txt`.
+DPDFNet is Apache-2.0 licensed. The license is installed as
+`licenses/DPDFNet-LICENSE-APACHE-2.0.txt`. Asset provenance and hashes are recorded
+in `NoiseNet/crates/noise-net-iree/model/PROVENANCE.md` and `SHA256SUMS.txt`.
 
 ## NoiseNet test speech
 
@@ -18,7 +19,7 @@ NoiseNet's source test data includes a resampled excerpt of Ian Skillen's
 public-domain LibriVox reading, obtained from Voice Zero. Voice Zero dedicates
 files in its `voices` directory to the public domain under CC0 1.0. This test
 fixture is not installed with the application. Its exact provenance
-and hashes are recorded in `NoiseNet/crates/noise-net/testdata/README.md`.
+and hashes are recorded in `NoiseNet/crates/noise-net-iree/testdata/README.md`.
 
 Origin: https://github.com/OwenTyme/voice-zero
 
@@ -39,7 +40,7 @@ retain their package-specific license files.
 
 ## GPUI interface
 
-NoiseHoiHoi v0.7 uses GPUI and gpui-component through GPUI Kit. These projects
+NoiseHoiHoi v0.8 uses GPUI and gpui-component through GPUI Kit. These projects
 are Apache-2.0 licensed:
 
 - https://github.com/zed-industries/zed
@@ -88,3 +89,11 @@ and library replacement instructions are in the bundled Linux README.
 
 Packaging tools: https://github.com/linuxdeploy/linuxdeploy and
 https://github.com/AppImage/appimagetool (checksum-pinned by the build script).
+
+## IREE runtime
+
+CPU and GPU inference use IREE commit
+`ce36167c3be514dd165a3ecff2d377cfa8eca0c9` (Apache-2.0 WITH LLVM-exception),
+flatcc (Apache-2.0, with separate portable-header notices), and Vulkan-Headers (Apache-2.0 OR MIT). Their notices are under
+`packaging/licenses/IREE-*` and included in both distributions. Model compilation
+and source provenance are recorded in `NoiseNet/crates/noise-net-iree/model/PROVENANCE.md`.

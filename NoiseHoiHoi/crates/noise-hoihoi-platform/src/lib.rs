@@ -1,12 +1,13 @@
 //! Windows/Linux adapters. No macOS implementation is provided.
 mod audio;
+mod compute;
 mod processor;
 mod settings;
 mod vb_cable;
 
 pub use audio::{input_devices, start};
+pub use compute::{ComputeProcessor, ComputeRuntime, ProcessorKind};
 pub use noise_hoihoi_engine::*;
-pub use noise_net_runtime::{ComputeProcessor, ComputeRuntime, ProcessorKind};
 pub use processor::NoiseReduction;
 pub use vb_cable::{
     VB_CABLE_PLAYBACK_ENDPOINT_NAME, VB_CABLE_RECORDING_ENDPOINT_NAME,
@@ -15,7 +16,7 @@ pub use vb_cable::{
 
 #[must_use]
 pub fn compute_processors() -> Vec<ComputeProcessor> {
-    noise_net_runtime::processors()
+    compute::processors()
 }
 
 #[cfg(target_os = "linux")]

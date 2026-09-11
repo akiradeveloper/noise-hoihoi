@@ -30,15 +30,7 @@ check:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
     bash -n scripts/docker/*.sh
 
-# Run NoiseNet's normal unit and Flex CPU suites with process isolation.
+# Run model reset and waveform tests with the packaged IREE runtime.
 test-noisenet:
-    cargo nextest run -p noise-net
-    cargo test -p noise-net --doc
-
-# Include long-running NoiseNet durability tests.
-test-noisenet-full:
-    cargo nextest run -P noisenet-full -p noise-net --run-ignored all
-
-# Run the opt-in reference suite on every WGPU adapter in this machine.
-test-noisenet-wgpu:
-    cargo nextest run -p noise-net --run-ignored ignored-only -E 'binary(/model_wgpu$/)'
+    cargo test --release -p noise-net-iree --lib
+    cargo test --release -p noise-net-iree --test streaming -- --ignored --nocapture

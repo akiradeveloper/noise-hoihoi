@@ -8,7 +8,9 @@ use std::{
 /// Implementations run on the dedicated processing thread, never on the GUI
 /// or an operating-system audio callback thread.
 pub trait AudioProcessor: Send + 'static {
-    fn process(&mut self, mono_48khz: &mut [f32]);
+    /// # Errors
+    /// Returns an inference or device failure; the route stops without publishing that frame.
+    fn process(&mut self, mono_48khz: &mut [f32]) -> Result<(), String>;
 
     /// Required processing block size, or `None` for arbitrary slices.
     fn frame_size(&self) -> Option<usize> {
@@ -25,7 +27,9 @@ pub trait AudioProcessor: Send + 'static {
 pub struct PassThrough;
 
 impl AudioProcessor for PassThrough {
-    fn process(&mut self, _mono_48khz: &mut [f32]) {}
+    fn process(&mut self, _mono_48khz: &mut [f32]) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Adapts variable resampler chunks to a processor's fixed frame size and
@@ -44,11 +48,15 @@ pub(crate) struct ProcessReport {
     pub(crate) processed_samples: usize,
     pub(crate) max_processing_time: Duration,
     pub(crate) deadline_misses: u64,
+    pub(crate) calls: u64,
+    pub(crate) total_processing_time: Duration,
 }
 
 impl ProcessReport {
     fn observe(&mut self, sample_count: usize, elapsed: Duration) {
         self.processed_samples += sample_count;
+        self.calls += 1;
+        self.total_processing_time += elapsed;
         self.max_processing_time = self.max_processing_time.max(elapsed);
         let sample_count = u32::try_from(sample_count).unwrap_or(u32::MAX);
         let deadline = Duration::from_secs_f64(
@@ -82,11 +90,11 @@ impl<P: AudioProcessor> ProcessorPipeline<P> {
         self.frame_size
     }
 
-    pub(crate) fn process<E>(
+    pub(crate) fn process(
         &mut self,
         input: &[f32],
-        mut publish: impl FnMut(&[f32], &[f32]) -> Result<(), E>,
-    ) -> Result<ProcessReport, E> {
+        mut publish: impl FnMut(&[f32], &[f32]) -> Result<(), String>,
+    ) -> Result<ProcessReport, String> {
         let mut report = ProcessReport::default();
         if let Some(frame_size) = self.frame_size {
             self.pending.extend(input);
@@ -99,7 +107,7 @@ impl<P: AudioProcessor> ProcessorPipeline<P> {
                 }
                 align_input(&mut self.input_delay, &self.frame, &mut self.aligned_input);
                 let started = Instant::now();
-                self.processor.process(&mut self.frame);
+                self.processor.process(&mut self.frame)?;
                 report.observe(frame_size, started.elapsed());
                 publish(&self.aligned_input, &self.frame)?;
             }
@@ -108,7 +116,7 @@ impl<P: AudioProcessor> ProcessorPipeline<P> {
             self.frame.extend_from_slice(input);
             align_input(&mut self.input_delay, &self.frame, &mut self.aligned_input);
             let started = Instant::now();
-            self.processor.process(&mut self.frame);
+            self.processor.process(&mut self.frame)?;
             report.observe(input.len(), started.elapsed());
             publish(&self.aligned_input, &self.frame)?;
         }
@@ -130,11 +138,34 @@ mod tests {
     use super::{AudioProcessor, PassThrough, ProcessorPipeline};
 
     #[test]
+    fn inference_failure_stops_before_publishing_the_failed_frame() {
+        struct Failed;
+        impl AudioProcessor for Failed {
+            fn process(&mut self, _samples: &mut [f32]) -> Result<(), String> {
+                Err("GPU device lost".into())
+            }
+            fn frame_size(&self) -> Option<usize> {
+                Some(4)
+            }
+        }
+        let mut pipeline = ProcessorPipeline::new(Failed).unwrap();
+        let mut published = false;
+        let error = pipeline
+            .process(&[1.0; 8], |_, _| {
+                published = true;
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(error, "GPU device lost");
+        assert!(!published);
+    }
+
+    #[test]
     fn pass_through_is_bit_exact() {
         let mut samples = [-1.0, -0.25, 0.0, 0.5, 1.0];
         let expected = samples;
 
-        PassThrough.process(&mut samples);
+        PassThrough.process(&mut samples).unwrap();
 
         assert_eq!(samples.map(f32::to_bits), expected.map(f32::to_bits));
     }
@@ -149,10 +180,11 @@ mod tests {
     struct Doubler;
 
     impl AudioProcessor for Doubler {
-        fn process(&mut self, samples: &mut [f32]) {
+        fn process(&mut self, samples: &mut [f32]) -> Result<(), String> {
             for sample in samples {
                 *sample *= 2.0;
             }
+            Ok(())
         }
 
         fn frame_size(&self) -> Option<usize> {
@@ -169,7 +201,7 @@ mod tests {
         let mut pipeline = ProcessorPipeline::new(Doubler).unwrap();
         assert_eq!(pipeline.frame_size(), Some(4));
         let mut published = Vec::new();
-        let mut collect = |input: &[f32], output: &[f32]| -> Result<(), ()> {
+        let mut collect = |input: &[f32], output: &[f32]| -> Result<(), String> {
             published.push((input.to_vec(), output.to_vec()));
             Ok(())
         };
@@ -204,7 +236,7 @@ mod tests {
         let report = pipeline
             .process(&[0.25, -0.5], |input, output| {
                 published.push((input.to_vec(), output.to_vec()));
-                Ok::<_, ()>(())
+                Ok::<_, String>(())
             })
             .unwrap();
 

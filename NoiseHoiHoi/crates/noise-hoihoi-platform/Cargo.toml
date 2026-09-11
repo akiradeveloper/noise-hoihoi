@@ -11,12 +11,11 @@ publish = false
 [dependencies]
 noise-hoihoi-engine = { path = "../noise-hoihoi-engine" }
 noise-hoihoi-session = { path = "../noise-hoihoi-session" }
-noise-net = { path = "../../../NoiseNet/crates/noise-net" }
-noise-net-runtime = { path = "../../../NoiseNet/crates/noise-net-runtime" }
+noise-net-iree = { path = "../../../NoiseNet/crates/noise-net-iree" }
+sysinfo.workspace = true
 rtrb.workspace = true
 directories = "6.0"
 tempfile = "3.27"
-ron = "0.12"
 serde.workspace = true
 serde_json.workspace = true
 
